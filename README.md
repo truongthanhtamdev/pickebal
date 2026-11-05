@@ -3,7 +3,7 @@
 Website demo tour riêng VIP Vancouver – Whistler – Vancouver Island, giao diện sang trọng tông tối + đồng thau.
 
 ## Xem website
-Mở trực tiếp `index.html` bằng trình duyệt (cần internet để tải font, ảnh, clip),
+Mở trực tiếp `index.html` bằng trình duyệt (ảnh và clip nằm sẵn trong `assets/`),
 hoặc bật GitHub Pages: Settings → Pages → Deploy from branch.
 
 ## Các phần
