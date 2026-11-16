@@ -406,6 +406,7 @@
       this.hMv = new Uint16Array(HASH_SIZE);
       this.history = new Int32Array(65536);
       this.killers = [];
+      this.exclude = [];
     }
 
     probe(depth, alpha, beta) {
@@ -517,7 +518,9 @@
         }
       }
 
-      const moves = this.orderMoves(pos.generateMoves(false), hashMv, ply);
+      let gen = pos.generateMoves(false);
+      if (ply === 0 && this.exclude.length) gen = gen.filter((m) => !this.exclude.includes(m));
+      const moves = this.orderMoves(gen, hashMv, ply);
       let best = -MATE, bestMv = 0, flag = H_ALPHA, legal = 0;
       const killers = this.killers[ply] || [0, 0];
       for (const [score, mv] of moves) {
@@ -545,7 +548,7 @@
         }
       }
       if (legal === 0) return pos.mateValue();
-      this.record(flag, best, depth, bestMv);
+      if (!(ply === 0 && this.exclude.length)) this.record(flag, best, depth, bestMv);
       if (bestMv) {
         if (ply === 0 && flag === H_BETA) { this.iterBest = bestMv; this.iterScore = best; }
         if (pos.board[DST(bestMv)] === 0) {
@@ -589,9 +592,10 @@
       const t0 = Date.now();
       this.deadline = t0 + (opts.time || 1000);
       const maxDepth = Math.min(opts.depth || LIMIT_DEPTH, LIMIT_DEPTH - 4);
-      const legal = pos.legalMoves();
+      this.exclude = opts.exclude || [];
+      const legal = pos.legalMoves().filter((m) => !this.exclude.includes(m));
       let result = { move: 0, score: 0, depth: 0, pv: [], nodes: 0, time: 0 };
-      if (legal.length === 0) { result.score = -MATE; return result; }
+      if (legal.length === 0) { result.score = this.exclude.length ? -MATE : pos.mateValue(); return result; }
       result.move = legal[0];
       this.rootBest = 0;
       if (legal.length === 1 && !opts.fullOnForced) {
@@ -679,7 +683,22 @@
     return (red >= 0 ? '+' : '') + (red / 100).toFixed(2);
   }
 
+  // Nhiều phương án: tìm nước tốt nhất, rồi loại nó ra để tìm nước tốt thứ hai, thứ ba...
+  function multiPV(searcher, pos, time, n, onInfo) {
+    const out = [], exclude = [];
+    const total = Math.min(n, pos.legalMoves().length);
+    for (let k = 0; k < total; k++) {
+      const share = k === 0 ? time * 0.5 : (time * 0.5) / Math.max(1, total - 1);
+      const r = searcher.think(pos, { time: Math.max(150, share), exclude: exclude.slice(), fullOnForced: true, onInfo: (info) => onInfo && onInfo(k, info) });
+      if (!r.move) break;
+      out.push(r); exclude.push(r.move);
+      if (onInfo) onInfo(k, r);
+    }
+    return out;
+  }
+
   const api = {
+    multiPV,
     Position, Searcher, START_FEN, MATE, WIN, BAN,
     KING, ADVISOR, BISHOP, KNIGHT, ROOK, CANNON, PAWN,
     SRC, DST, MOVE, COORD, IN_BOARD, IN_FORT, HOME_HALF,
@@ -703,6 +722,8 @@
           onInfo: (info) => root.postMessage({ id: m.id, type: 'info', info }),
         });
         root.postMessage({ id: m.id, type: 'done', result: r });
+      } else if (m.cmd === 'multi') {
+        root.postMessage({ id: m.id, type: 'done', result: multiPV(searcher, pos, m.time, m.n, (k, info) => root.postMessage({ id: m.id, type: 'info', k, info })) });
       }
     };
   }

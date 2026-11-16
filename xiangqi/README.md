@@ -12,7 +12,7 @@ rồi vào http://localhost:8000.
 
 ## Tính năng
 - **Đấu với máy**: chọn cầm Đỏ hoặc Đen, chỉnh thời gian máy nghĩ (0,5–25 giây/nước).
-- **Gợi ý**: mũi tên xanh chỉ nước tốt nhất, mũi tên xám là nước đáp dự kiến của đối phương; kèm điểm thế cờ và diễn biến dự kiến.
+- **Đánh giá điểm & gợi ý**: điểm thế cờ kèm lời nhận xét (cân bằng / nhỉnh hơn / ưu thế…), so sánh quân hai bên, và 3 nước tốt nhất có mũi tên đánh số, nhận xét ngắn, diễn biến dự kiến. Có thể bật gợi ý tự động mỗi khi đến lượt bạn.
 - **Phân tích tự do**: tự đi cho cả hai bên (chép lại ván ngoài đời), máy liên tục chỉ nước tốt nhất.
 - **Phân tích cả ván**: chấm từng nước (tốt nhất / tốt / thiếu chính xác / sai lầm / sai lầm nặng), độ chính xác của mỗi bên, biểu đồ ưu thế.
 - **Luyện lại nước sai**: nước sai của bạn được lưu vào sổ, máy cho lại thế cờ để bạn tìm nước đúng.

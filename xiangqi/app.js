@@ -24,19 +24,19 @@
       });
       try {
         const w = new Worker('engine.js');
-        if (await tryWorker(w)) { this.url = 'engine.js'; return this.attach(w, 'worker'); }
+        if (await tryWorker(w)) { this.url = 'engine.js'; return this.attach(w); }
       } catch (e) { /* thử cách khác */ }
       try {
         const src = await (await fetch('engine.js')).text();
         const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
         const w = new Worker(url);
-        if (await tryWorker(w)) { this.url = url; return this.attach(w, 'worker'); }
+        if (await tryWorker(w)) { this.url = url; return this.attach(w); }
       } catch (e) { /* luồng chính */ }
       this.mode = 'main';
       return this;
     }
-    attach(w, mode) {
-      this.worker = w; this.mode = mode;
+    attach(w) {
+      this.worker = w; this.mode = 'worker';
       w.onmessage = (e) => this.onMsg(e.data);
       w.onerror = () => { };
       return this;
@@ -44,38 +44,36 @@
     onMsg(m) {
       const c = this.cur;
       if (!c || m.id !== c.id) return;
-      if (m.type === 'info' && c.onInfo) c.onInfo(m.info);
+      if (m.type === 'info' && c.onInfo) c.onInfo(m.info, m.k || 0);
       if (m.type === 'done') { this.cur = null; c.resolve(m.result); }
     }
     cancel() {
       if (!this.cur) return;
       const c = this.cur; this.cur = null;
-      if (this.worker) {
-        this.worker.terminate();
-        const w = new Worker(this.url);
-        this.attach(w, 'worker');
-      }
+      if (this.worker) { this.worker.terminate(); this.attach(new Worker(this.url)); }
       c.resolve(null);
     }
-    search(fen, moves, time, onInfo, full) {
+    run(msg, onInfo) {
       this.cancel();
       return new Promise((resolve) => {
         const id = ++this.seq;
         this.cur = { id, resolve, onInfo };
-        if (this.worker) {
-          this.worker.postMessage({ cmd: 'search', id, fen, moves, time, full: !!full });
-        } else {
-          setTimeout(() => {
-            if (!this.cur || this.cur.id !== id) return;
-            if (!this.local) this.local = new X.Searcher();
-            const pos = new X.Position().fromFen(fen);
-            for (const mv of moves) pos.makeMove(mv);
-            const r = this.local.think(pos, { time: Math.min(time, 4000), onInfo, fullOnForced: !!full });
-            if (this.cur && this.cur.id === id) { this.cur = null; resolve(r); }
-          }, 30);
-        }
+        if (this.worker) { this.worker.postMessage({ ...msg, id }); return; }
+        setTimeout(() => {
+          if (!this.cur || this.cur.id !== id) return;
+          if (!this.local) this.local = new X.Searcher();
+          const pos = new X.Position().fromFen(msg.fen);
+          for (const mv of msg.moves) pos.makeMove(mv);
+          const time = Math.min(msg.time, 4000);
+          const r = msg.cmd === 'multi'
+            ? X.multiPV(this.local, pos, time, msg.n, (k, info) => onInfo && onInfo(info, k))
+            : this.local.think(pos, { time, onInfo: (info) => onInfo && onInfo(info, 0), fullOnForced: !!msg.full });
+          if (this.cur && this.cur.id === id) { this.cur = null; resolve(r); }
+        }, 30);
       });
     }
+    search(fen, moves, time, onInfo, full) { return this.run({ cmd: 'search', fen, moves, time, full: !!full }, onInfo); }
+    multi(fen, moves, time, n, onInfo) { return this.run({ cmd: 'multi', fen, moves, time, n }, onInfo); }
   }
 
   // ---------- Khai cuộc cơ bản (ICCS) ----------
@@ -138,7 +136,8 @@
   const S = {
     startFen: X.START_FEN, moves: [], notes: [], view: null,
     mode: 'play', human: 0, flipped: false, time: 3000,
-    selected: -1, hint: null, analysis: null, review: null,
+    selected: -1, hint: null, analysis: null, review: null, thinking: false, autoHint: true,
+    anim: null, animKey: '', prevVi: -1,
     editing: false, edPiece: 12, edBoard: null, edSide: 0,
     train: null,
   };
@@ -169,8 +168,14 @@
   }
 
   // ---------- Vẽ bàn cờ ----------
-  const CELL = 56, OX = 36, OY = 46;
+  const CELL = 56, OX = 36, OY = 46, BW = 520, BH = 596;
   const HAN = { 8: '帥', 9: '仕', 10: '相', 11: '傌', 12: '俥', 13: '炮', 14: '兵', 16: '將', 17: '士', 18: '象', 19: '馬', 20: '車', 21: '砲', 22: '卒' };
+  const PIECE_PTS = [0, 2, 2, 4, 9, 4.5, 1];
+  const CAND_COLORS = ['var(--jade)', '#3b82a6', '#8a6bb8'];
+  const ANIM_MS = 240;
+  let reduceMotion = false;
+  try { reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { }
+
   const sqXY = (sq) => {
     let c = (sq & 15) - 3, r = (sq >> 4) - 3;
     if (S.flipped) { c = 8 - c; r = 9 - r; }
@@ -183,113 +188,225 @@
     return e;
   }
 
-  function drawGrid(svg) {
-    const g = el('g', { stroke: 'var(--wood-line)', 'stroke-width': 1.4, fill: 'none' }, svg);
-    el('rect', { x: OX - 6, y: OY - 6, width: 8 * CELL + 12, height: 9 * CELL + 12, 'stroke-width': 2.6 }, g);
-    for (let r = 0; r < 10; r++) el('line', { x1: OX, y1: OY + r * CELL, x2: OX + 8 * CELL, y2: OY + r * CELL }, g);
-    for (let c = 0; c < 9; c++) {
-      if (c === 0 || c === 8) el('line', { x1: OX + c * CELL, y1: OY, x2: OX + c * CELL, y2: OY + 9 * CELL }, g);
-      else {
-        el('line', { x1: OX + c * CELL, y1: OY, x2: OX + c * CELL, y2: OY + 4 * CELL }, g);
-        el('line', { x1: OX + c * CELL, y1: OY + 5 * CELL, x2: OX + c * CELL, y2: OY + 9 * CELL }, g);
-      }
+  let layers = null, layersFlip = null;
+  function ensureStatic() {
+    if (layers && layersFlip === S.flipped) return layers;
+    const svg = $('board');
+    svg.textContent = '';
+    const defs = el('defs', {}, svg);
+    defs.innerHTML = `
+      <linearGradient id="gFrame" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--frame-1)"/><stop offset="1" style="stop-color:var(--frame-2)"/></linearGradient>
+      <linearGradient id="gWood" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" style="stop-color:var(--wood-1)"/><stop offset="1" style="stop-color:var(--wood-2)"/></linearGradient>
+      <filter id="fGrain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.004 0.09" numOctaves="3" seed="11"/>
+        <feColorMatrix type="matrix" values="0 0 0 0 0.42  0 0 0 0 0.24  0 0 0 0 0.08  0 0 0 -1.1 0.62"/>
+        <feComposite in2="SourceGraphic" operator="in"/>
+      </filter>
+      <radialGradient id="gPiece" cx="0.38" cy="0.3" r="0.78"><stop offset="0" style="stop-color:var(--ivory-1)"/><stop offset="1" style="stop-color:var(--ivory-2)"/></radialGradient>
+      <linearGradient id="gRim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--ivory-1)"/><stop offset="1" style="stop-color:var(--ivory-edge)"/></linearGradient>
+      <filter id="fShadow" x="-40%" y="-40%" width="180%" height="190%"><feDropShadow dx="0" dy="2.6" stdDeviation="1.8" flood-color="#2a1404" flood-opacity="0.5"/></filter>
+      <filter id="fLift" x="-50%" y="-50%" width="200%" height="220%"><feDropShadow dx="0" dy="8" stdDeviation="4" flood-color="#2a1404" flood-opacity="0.42"/></filter>
+      <radialGradient id="gHalo"><stop offset="0.55" stop-color="#17855d" stop-opacity="0.45"/><stop offset="1" stop-color="#17855d" stop-opacity="0"/></radialGradient>`;
+    // khung gỗ trắc + mặt gỗ
+    el('rect', { x: 0, y: 0, width: BW, height: BH, rx: 18, fill: 'url(#gFrame)' }, svg);
+    el('rect', { x: 9, y: 21, width: BW - 18, height: BH - 42, rx: 7, fill: 'none', stroke: 'var(--gold)', 'stroke-width': 1, opacity: .55 }, svg);
+    el('rect', { x: 13, y: 25, width: BW - 26, height: BH - 50, rx: 5, fill: 'url(#gWood)' }, svg);
+    el('rect', { x: 13, y: 25, width: BW - 26, height: BH - 50, rx: 5, fill: '#fff', filter: 'url(#fGrain)', opacity: .5 }, svg);
+    const g = el('g', { stroke: 'var(--wood-line)', 'stroke-width': 1.3, fill: 'none', 'stroke-linecap': 'square' }, svg);
+    el('rect', { x: OX - 6, y: OY - 6, width: 8 * CELL + 12, height: 9 * CELL + 12, 'stroke-width': 2.4 }, g);
+    el('rect', { x: OX, y: OY, width: 8 * CELL, height: 9 * CELL, 'stroke-width': 1.5 }, g);
+    for (let r = 1; r < 9; r++) el('line', { x1: OX, y1: OY + r * CELL, x2: OX + 8 * CELL, y2: OY + r * CELL }, g);
+    for (let c = 1; c < 8; c++) {
+      el('line', { x1: OX + c * CELL, y1: OY, x2: OX + c * CELL, y2: OY + 4 * CELL }, g);
+      el('line', { x1: OX + c * CELL, y1: OY + 5 * CELL, x2: OX + c * CELL, y2: OY + 9 * CELL }, g);
     }
     for (const r0 of [0, 7]) {
       el('line', { x1: OX + 3 * CELL, y1: OY + r0 * CELL, x2: OX + 5 * CELL, y2: OY + (r0 + 2) * CELL }, g);
       el('line', { x1: OX + 5 * CELL, y1: OY + r0 * CELL, x2: OX + 3 * CELL, y2: OY + (r0 + 2) * CELL }, g);
     }
-    // dấu vị trí pháo, tốt
     const marks = [[1, 2], [7, 2], [1, 7], [7, 7], [0, 3], [2, 3], [4, 3], [6, 3], [8, 3], [0, 6], [2, 6], [4, 6], [6, 6], [8, 6]];
     for (const [c, r] of marks) {
       const x = OX + c * CELL, y = OY + r * CELL, d = 4, l = 9;
       for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
         if ((c === 0 && sx < 0) || (c === 8 && sx > 0)) continue;
-        el('polyline', { points: `${x + sx * (d + l)},${y + sy * d} ${x + sx * d},${y + sy * d} ${x + sx * d},${y + sy * (d + l)}`, 'stroke-width': 1.2 }, g);
+        el('polyline', { points: `${x + sx * (d + l)},${y + sy * d} ${x + sx * d},${y + sy * d} ${x + sx * d},${y + sy * (d + l)}`, 'stroke-width': 1.1 }, g);
       }
     }
-    const t = el('g', { fill: 'var(--wood-line)', 'font-family': 'var(--font-han)', 'font-size': 26, 'text-anchor': 'middle', 'dominant-baseline': 'central', opacity: .75 }, svg);
+    const t = el('g', { fill: 'var(--wood-line)', 'font-family': 'var(--font-han)', 'font-weight': 900, 'font-size': 27, 'text-anchor': 'middle', 'dominant-baseline': 'central', opacity: .62 }, svg);
     const ry = OY + 4.5 * CELL;
-    [['楚', 1.5], ['河', 2.5], ['漢', 5.5], ['界', 6.5]].forEach(([ch, c]) => { const e = el('text', { x: OX + c * CELL, y: ry }, t); e.textContent = ch; });
-    // số cột
-    const n = el('g', { fill: 'var(--wood-line)', 'font-family': 'var(--font-mono)', 'font-size': 11, 'text-anchor': 'middle', opacity: .8 }, svg);
+    [['楚', 1.4], ['河', 2.5], ['漢', 5.5], ['界', 6.6]].forEach(([ch, c]) => { el('text', { x: OX + c * CELL, y: ry }, t).textContent = ch; });
+    // số cột: mỗi bên đánh số từ phải sang trái theo phía mình
+    const n = el('g', { fill: 'var(--frame-text)', 'font-family': 'var(--font-mono)', 'font-weight': 700, 'font-size': 11, 'text-anchor': 'middle', 'dominant-baseline': 'central', opacity: .9 }, svg);
     for (let c = 0; c < 9; c++) {
-      // mỗi bên đánh số cột từ phải sang trái theo phía mình
-      el('text', { x: OX + c * CELL, y: 14 }, n).textContent = c + 1;
-      el('text', { x: OX + c * CELL, y: 590 }, n).textContent = 9 - c;
+      el('text', { x: OX + c * CELL, y: 11.5 }, n).textContent = c + 1;
+      el('text', { x: OX + c * CELL, y: BH - 11.5 }, n).textContent = 9 - c;
     }
+    const dyn = el('g', {}, svg);
+    layers = { svg, dyn }; layersFlip = S.flipped;
+    return layers;
   }
 
-  function arrow(svg, mv, color, width, opacity) {
+  function drawPiece(parent, pc, x, y, opts) {
+    opts = opts || {};
+    const isRed = pc < 16;
+    const color = isRed ? 'var(--red)' : 'var(--ink)';
+    const g = el('g', { class: 'pc', transform: `translate(${x},${y})` }, parent);
+    const inner = el('g', opts.lift ? { transform: 'translate(0,-4) scale(1.06)' } : {}, g);
+    if (opts.lift) el('circle', { r: 36, fill: 'url(#gHalo)' }, inner);
+    const body = el('g', { filter: opts.lift ? 'url(#fLift)' : 'url(#fShadow)' }, inner);
+    el('circle', { r: 25.5, fill: 'url(#gRim)' }, body);
+    el('circle', { r: 23, fill: 'url(#gPiece)' }, body);
+    el('circle', { r: 19.6, fill: 'none', stroke: color, 'stroke-width': 1.5, opacity: .8 }, inner);
+    const tx = el('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': 'var(--font-han)', 'font-size': 26, 'font-weight': 900, fill: color, y: 1 }, inner);
+    tx.textContent = HAN[pc];
+    if (opts.check) el('circle', { r: 28.5, fill: 'none', stroke: 'var(--bad)', 'stroke-width': 3.5, class: 'checkring' }, g);
+    return g;
+  }
+
+  function arrow(parent, mv, color, width, opacity, label, dashed) {
     const [x1, y1] = sqXY(X.SRC(mv)), [x2, y2] = sqXY(X.DST(mv));
     const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
-    const ux = dx / len, uy = dy / len;
-    const sx = x1 + ux * 14, sy = y1 + uy * 14, ex = x2 - ux * 18, ey = y2 - uy * 18;
-    const g = el('g', { opacity, 'pointer-events': 'none' }, svg);
-    el('line', { x1: sx, y1: sy, x2: ex, y2: ey, stroke: color, 'stroke-width': width, 'stroke-linecap': 'round' }, g);
-    const hx = ex + ux * 12, hy = ey + uy * 12, px = -uy, py = ux;
-    el('polygon', { points: `${hx},${hy} ${ex + px * 10},${ey + py * 10} ${ex - px * 10},${ey - py * 10}`, fill: color }, g);
+    const ux = dx / len, uy = dy / len, px = -uy, py = ux;
+    const sx = x1 + ux * 12, sy = y1 + uy * 12, ex = x2 - ux * 20, ey = y2 - uy * 20;
+    const hx = x2 - ux * 6, hy = y2 - uy * 6, hw = width * 1.6 + 3;
+    const g = el('g', { opacity, 'pointer-events': 'none' }, parent);
+    const shaft = { x1: sx, y1: sy, x2: ex, y2: ey, 'stroke-linecap': 'round' };
+    el('line', { ...shaft, stroke: 'rgba(255,255,255,.55)', 'stroke-width': width + 3, ...(dashed ? { 'stroke-dasharray': '2 9' } : {}) }, g);
+    el('line', { ...shaft, stroke: color, 'stroke-width': width, ...(dashed ? { 'stroke-dasharray': '2 9' } : {}) }, g);
+    el('polygon', { points: `${hx},${hy} ${ex + px * hw},${ey + py * hw} ${ex - px * hw},${ey - py * hw}`, fill: color, stroke: 'rgba(255,255,255,.55)', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, g);
+    if (label) {
+      const short = len < 80;
+      const mx = short ? x1 + 19 : sx + (ex - sx) * 0.4, my = short ? y1 - 19 : sy + (ey - sy) * 0.4;
+      el('circle', { cx: mx, cy: my, r: 10, fill: color, stroke: '#fff', 'stroke-width': 2 }, g);
+      const t = el('text', { x: mx, y: my + 0.5, 'text-anchor': 'middle', 'dominant-baseline': 'central', fill: '#fff', 'font-family': 'var(--font-ui)', 'font-weight': 800, 'font-size': 12 }, g);
+      t.textContent = label;
+    }
   }
 
   function render() {
-    const svg = $('board');
-    svg.textContent = '';
-    drawGrid(svg);
+    const { dyn } = ensureStatic();
+    dyn.textContent = '';
     const pos = S.editing ? null : currentPos();
     const board = S.editing ? S.edBoard : pos.board;
     const vi = viewIndex();
-    const last = S.train ? 0 : (vi > 0 ? S.moves[vi - 1] : 0);
-    if (last) {
-      for (const sq of [X.SRC(last), X.DST(last)]) {
-        const [x, y] = sqXY(sq);
-        el('rect', { x: x - 27, y: y - 27, width: 54, height: 54, rx: 8, fill: 'none', stroke: 'var(--jade)', 'stroke-width': 2.5, 'stroke-dasharray': '6 4' }, svg);
-      }
+    const last = S.train || S.editing ? 0 : (vi > 0 ? S.moves[vi - 1] : 0);
+
+    // hoạt cảnh quân trượt khi vừa đi một nước
+    const animKey = S.train ? 'train' : vi + ':' + last;
+    if (animKey !== S.animKey) {
+      if (last && S.prevVi === vi - 1 && !reduceMotion) S.anim = { key: animKey, mv: last, t0: performance.now() };
+      S.animKey = animKey;
     }
-    // quân
+    S.prevVi = S.train ? -1 : vi;
+
+    if (last) {
+      const [sx, sy] = sqXY(X.SRC(last)), [dx, dy] = sqXY(X.DST(last));
+      el('circle', { cx: sx, cy: sy, r: 9, fill: 'none', stroke: 'var(--gold)', 'stroke-width': 2.5, opacity: .9 }, dyn);
+      el('circle', { cx: dx, cy: dy, r: 30, fill: 'var(--gold)', opacity: .35 }, dyn);
+    }
+    const inCheckSide = !S.editing && pos.inCheck() ? pos.sd : -1;
+    const pieceLayer = el('g', {}, dyn);
+    let animated = null;
     for (let sq = 0; sq < 256; sq++) {
       const pc = board[sq];
-      if (!pc) continue;
+      if (!pc || sq === S.selected) continue;
       const [x, y] = sqXY(sq);
-      const isRed = pc < 16;
-      const g = el('g', { transform: `translate(${x},${y})` }, svg);
-      if (sq === S.selected) el('circle', { r: 28, fill: 'var(--jade)', opacity: .35 }, g);
-      el('circle', { r: 25, fill: 'var(--piece)', stroke: 'var(--piece-ring)', 'stroke-width': 2.5 }, g);
-      el('circle', { r: 20.5, fill: 'none', stroke: isRed ? 'var(--red)' : 'var(--ink)', 'stroke-width': 1.4 }, g);
-      if (!S.editing && pos.inCheck() && (pc & 7) === X.KING && (isRed ? 0 : 1) === pos.sd) el('circle', { r: 25, fill: 'none', stroke: 'var(--bad)', 'stroke-width': 4 }, g);
-      const t = el('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': 'var(--font-han)', 'font-size': 27, 'font-weight': 700, fill: isRed ? 'var(--red)' : 'var(--ink)', y: 1 }, g);
-      t.textContent = HAN[pc];
+      const isKingInCheck = (pc & 7) === X.KING && (pc < 16 ? 0 : 1) === inCheckSide;
+      const g = drawPiece(pieceLayer, pc, x, y, { check: isKingInCheck });
+      if (S.anim && S.anim.key === animKey && sq === X.DST(S.anim.mv)) animated = { g, x, y };
     }
-    // nước đi hợp lệ của quân đang chọn
+    if (S.selected >= 0 && board[S.selected]) {
+      const [x, y] = sqXY(S.selected);
+      drawPiece(pieceLayer, board[S.selected], x, y, { lift: true });
+    }
+    if (animated && animated.g.animate) {
+      const el0 = performance.now() - S.anim.t0;
+      if (el0 < ANIM_MS) {
+        const [sx, sy] = sqXY(X.SRC(S.anim.mv));
+        const p = el0 / ANIM_MS;
+        const fx = sx + (animated.x - sx) * p, fy = sy + (animated.y - sy) * p;
+        pieceLayer.appendChild(animated.g);
+        animated.g.animate([{ transform: `translate(${fx}px,${fy}px)` }, { transform: `translate(${animated.x}px,${animated.y}px)` }],
+          { duration: ANIM_MS - el0, easing: 'cubic-bezier(.2,.75,.25,1)' });
+      } else S.anim = null;
+    }
+
     if (!S.editing && S.selected >= 0) {
       for (const mv of pos.legalMoves()) {
         if (X.SRC(mv) !== S.selected) continue;
         const [x, y] = sqXY(X.DST(mv));
-        if (pos.board[X.DST(mv)]) el('circle', { cx: x, cy: y, r: 27, fill: 'none', stroke: 'var(--jade)', 'stroke-width': 3, 'pointer-events': 'none' }, svg);
-        else el('circle', { cx: x, cy: y, r: 7, fill: 'var(--jade)', opacity: .8, 'pointer-events': 'none' }, svg);
+        if (pos.board[X.DST(mv)]) el('circle', { cx: x, cy: y, r: 28, fill: 'none', stroke: 'var(--jade)', 'stroke-width': 3.5, 'stroke-dasharray': '7 5', 'pointer-events': 'none' }, dyn);
+        else el('circle', { cx: x, cy: y, r: 8, fill: 'var(--jade)', stroke: '#fff', 'stroke-width': 2, opacity: .9, 'pointer-events': 'none' }, dyn);
       }
     }
     if (!S.editing && S.hint && S.hint.fenKey === posKey(pos)) {
-      if (S.hint.pv && S.hint.pv[1]) arrow(svg, S.hint.pv[1], 'var(--muted)', 5, .55);
-      arrow(svg, S.hint.move, 'var(--jade)', 7, .9);
+      const cs = S.hint.cands, sel = S.hint.sel || 0;
+      const many = cs.length > 1;
+      for (let k = cs.length - 1; k >= 0; k--) if (k !== sel) arrow(dyn, cs[k].move, CAND_COLORS[k % 3], 5, .5, many ? String(k + 1) : '');
+      const c = cs[sel];
+      if (c) {
+        if (c.pv && c.pv[1]) arrow(dyn, c.pv[1], 'var(--muted)', 4, .7, '', true);
+        arrow(dyn, c.move, CAND_COLORS[sel % 3], 7.5, .95, many ? String(sel + 1) : '');
+      }
     }
     renderStatus(pos);
   }
 
-  function renderStatus(pos) {
-    if (S.editing) {
-      $('turnText').textContent = 'Đang xếp cờ';
-      $('turnDot').className = 'dot ' + (S.edSide === 0 ? 'red' : 'black');
-      $('checkChip').hidden = true;
-      return;
+  // ---------- Thanh người chơi, trạng thái ----------
+  function countPieces(board) {
+    const n = [new Array(7).fill(0), new Array(7).fill(0)];
+    for (let sq = 0; sq < 256; sq++) { const pc = board[sq]; if (pc) n[pc < 16 ? 0 : 1][pc & 7]++; }
+    return n;
+  }
+  const sideName = (sd) => (S.mode === 'play' && !S.train && !S.editing ? (sd === S.human ? 'Bạn' : 'Máy') + (sd === 0 ? ' · Đỏ' : ' · Đen') : (sd === 0 ? 'Quân Đỏ' : 'Quân Đen'));
+
+  function renderPlayers(pos) {
+    const board = S.editing ? S.edBoard : pos.board;
+    const now = countPieces(board);
+    const start = S.editing ? now : countPieces(new X.Position().fromFen(S.train ? S.train.fen : S.startFen).board);
+    const pts = [0, 1].map((sd) => now[sd].reduce((a, c, t) => a + c * PIECE_PTS[t], 0));
+    const over = !S.editing && !S.train && gameResult(pos);
+    const topSd = S.flipped ? 0 : 1;
+    for (const [id, sd] of [['stripTop', topSd], ['stripBottom', 1 - topSd]]) {
+      const opp = 1 - sd;
+      let caps = '';
+      for (const t of [X.ROOK, X.CANNON, X.KNIGHT, X.BISHOP, X.ADVISOR, X.PAWN]) {
+        const lost = Math.max(0, start[opp][t] - now[opp][t]);
+        for (let i = 0; i < lost; i++) caps += `<span class="${opp === 0 ? 'r' : 'b'}">${HAN[(opp === 0 ? 8 : 16) + t]}</span>`;
+      }
+      const diff = pts[sd] - pts[opp];
+      if (diff > 0) caps += `<span class="adv">+${Number.isInteger(diff) ? diff : diff.toFixed(1)}</span>`;
+      const active = !S.editing && !over && pos.sd === sd;
+      let flags = '';
+      if (active) {
+        if (pos.inCheck()) flags += '<span class="flag check">Bị chiếu</span>';
+        if (S.thinking) flags += `<span class="flag think">${S.mode === 'play' && sd !== S.human && !S.train ? 'Đang nghĩ' : 'Đang tính'}</span>`;
+        else flags += '<span class="flag turn">Đến lượt</span>';
+      }
+      const box = $(id);
+      box.className = 'player' + (active ? ' active' : '');
+      box.innerHTML = `<div class="avatar ${sd === 0 ? 'r' : 'b'}">${sd === 0 ? '帥' : '將'}</div>` +
+        `<div class="pinfo"><div class="pname">${sideName(sd)} ${flags}</div><div class="captured" title="Quân đã ăn được">${caps || '<span class="muted" style="font-family:var(--font-ui);font-size:12px">Chưa ăn quân nào</span>'}</div></div>`;
     }
-    $('turnDot').className = 'dot ' + (pos.sd === 0 ? 'red' : 'black');
+  }
+
+  function setThinking(v) {
+    S.thinking = v;
+    if (!S.editing) renderPlayers(currentPos());
+  }
+
+  function renderStatus(pos) {
+    renderPlayers(pos);
+    if (S.editing) { $('turnText').textContent = 'Đang xếp cờ · chọn quân bên tab “Xếp cờ”'; return; }
     let t = (pos.sd === 0 ? 'Đỏ' : 'Đen') + ' đi';
-    if (S.view != null && !S.train) t += ` · đang xem nước ${S.view}/${S.moves.length}`;
-    if (S.train) t += ' · luyện tập';
+    if (S.train) t += ' · đang luyện tập';
+    else if (S.view != null) t += ` · đang xem lại nước ${S.view}/${S.moves.length}`;
+    else t += ` · nước thứ ${Math.floor(S.moves.length / 2) + 1}`;
     $('turnText').textContent = t;
-    $('checkChip').hidden = !pos.inCheck();
     const res = S.train ? null : gameResult(pos);
     const gm = $('gameMsg');
     if (res) { gm.hidden = false; gm.textContent = res.text; } else gm.hidden = true;
+    renderFacts(pos);
     renderMoveList();
   }
 
@@ -331,47 +448,166 @@
     if (cur) cur.scrollIntoView({ block: 'nearest' });
   }
 
-  // ---------- Phân tích / gợi ý ----------
-  function showAnalysis(pos, r, label) {
-    if (!r || !r.move) return;
-    $('aBest').textContent = X.moveToVN(pos, r.move);
-    $('aScore').textContent = X.scoreText(r.score, pos.sd);
-    const p = pos.clone(); const parts = [];
-    for (const mv of r.pv || []) { if (!p.legalMove(mv)) break; parts.push(X.moveToVN(p, mv)); p.makeMove(mv); }
-    $('aPv').textContent = parts.length ? 'Diễn biến dự kiến: ' + parts.join('  ') : '';
+  // ---------- Đánh giá điểm & nước gợi ý ----------
+  const TYPE_NAME = ['Tướng', 'Sĩ', 'Tượng', 'Mã', 'Xe', 'Pháo', 'Tốt'];
+  function redScore(score, sd) { return sd === 0 ? score : -score; }
+  function fmtScore(red) {
+    if (Math.abs(red) > X.WIN) { const n = Math.max(1, Math.ceil((X.MATE - Math.abs(red)) / 2)); return (red > 0 ? '+' : '−') + 'M' + n; }
+    const v = (Math.abs(red) / 100).toFixed(2);
+    return (red > 0 ? '+' : red < 0 ? '−' : '') + v;
+  }
+  function verdict(red) {
+    const a = Math.abs(red), who = red > 0 ? 'Đỏ' : 'Đen', other = red > 0 ? 'Đen' : 'Đỏ';
+    if (a > X.WIN) { const n = Math.max(1, Math.ceil((X.MATE - a) / 2)); return [`${who} thắng`, `${who} chiếu bí được sau ${n} nước nếu đi đúng.`]; }
+    if (a < 30) return ['Cân bằng', 'Hai bên ngang ngửa, chưa ai hơn ai.'];
+    if (a < 100) return [`${who} nhỉnh hơn một chút`, `Hơn kém rất ít, ${other} vẫn chơi thoải mái.`];
+    if (a < 250) return [`${who} có ưu thế`, `${other} cần chơi cẩn thận, tránh mất thêm.`];
+    if (a < 600) return [`${who} ưu thế lớn`, `Tương đương hơn khoảng một quân Mã hoặc Pháo.`];
+    return [`${who} gần như thắng`, `Chênh lệch rất lớn, ${other} khó gỡ.`];
+  }
+
+  // Những điều thấy được trên bàn, không cần máy tính: quân hơn kém, tốt qua sông, đang bị chiếu
+  function renderFacts(pos) {
+    const box = $('evalFacts');
+    const n = countPieces(pos.board);
+    const facts = [];
+    const diffs = [];
+    for (const t of [X.ROOK, X.KNIGHT, X.CANNON, X.PAWN, X.ADVISOR, X.BISHOP]) {
+      const d = n[0][t] - n[1][t];
+      if (d) diffs.push(`${d > 0 ? 'Đỏ' : 'Đen'} hơn ${Math.abs(d)} ${TYPE_NAME[t]}`);
+    }
+    facts.push(diffs.length ? diffs.join(', ') : 'Quân hai bên bằng nhau');
+    let cross = [0, 0];
+    for (let sq = 0; sq < 256; sq++) {
+      const pc = pos.board[sq];
+      if ((pc & 7) !== X.PAWN || !pc) continue;
+      const sd = pc < 16 ? 0 : 1;
+      if (!X.HOME_HALF(sq, sd)) cross[sd]++;
+    }
+    for (const sd of [0, 1]) if (cross[sd]) facts.push(`${sd === 0 ? 'Đỏ' : 'Đen'} có ${cross[sd]} tốt qua sông`);
+    if (pos.inCheck()) facts.push(`${pos.sd === 0 ? 'Đỏ' : 'Đen'} đang bị chiếu`);
+    facts.push(`${pos.legalMoves().length} nước đi hợp lệ`);
+    box.innerHTML = facts.map((f) => `<span class="fact">${f}</span>`).join('');
+  }
+
+  function describeMove(pos, mv) {
+    const cap = pos.board[X.DST(mv)];
+    const pc = pos.board[X.SRC(mv)];
+    const p = pos.clone(); p.makeMove(mv);
+    const parts = [];
+    if (p.legalMoves().length === 0) parts.push('chiếu bí');
+    else if (p.inCheck()) parts.push('chiếu tướng');
+    if (cap) parts.push('ăn ' + TYPE_NAME[cap & 7]);
+    const sd = pc < 16 ? 0 : 1;
+    if ((pc & 7) === X.PAWN && X.HOME_HALF(X.SRC(mv), sd) && !X.HOME_HALF(X.DST(mv), sd)) parts.push('tốt qua sông');
+    if (!parts.length) {
+      const t = pc & 7;
+      const startRow = sd === 0 ? 12 : 3;
+      if ((t === X.KNIGHT || t === X.ROOK) && (X.SRC(mv) >> 4) === startRow) parts.push('ra quân');
+      else if (t === X.CANNON && ((X.DST(mv) & 15) === 7)) parts.push('pháo về giữa');
+      else if (t === X.ADVISOR || t === X.BISHOP || t === X.KING) parts.push('củng cố phòng thủ');
+    }
+    return parts.join(', ');
+  }
+
+  function renderEvalCard(pos) {
+    const big = $('evalBig');
+    const h = S.hint && S.hint.fenKey === posKey(pos) && S.hint.scored ? S.hint : null;
+    if (!h) {
+      big.textContent = '—'; big.className = 'bignum even';
+      $('evalWords').textContent = S.thinking ? 'Đang tính…' : 'Chưa chấm điểm';
+      $('evalSub').textContent = S.thinking ? 'Máy đang tính các phương án.' : 'Bấm “Gợi ý nước đi” để máy chấm điểm thế cờ này.';
+      return;
+    }
+    const red = redScore(h.cands[0].score, pos.sd);
+    big.textContent = fmtScore(red);
+    big.className = 'bignum ' + (Math.abs(red) < 30 ? 'even' : red > 0 ? 'red' : 'black');
+    const [w, sub] = verdict(red);
+    $('evalWords').textContent = w;
+    $('evalSub').textContent = sub + ' (Điểm tính theo tốt: +1.00 ≈ Đỏ hơn một con tốt.)';
+  }
+
+  function renderCands(pos) {
+    const box = $('cands');
+    const h = S.hint && S.hint.fenKey === posKey(pos) ? S.hint : null;
+    box.textContent = '';
+    if (!h || !h.cands.length) {
+      const d = document.createElement('div'); d.className = 'empty';
+      d.textContent = S.thinking ? 'Máy đang tìm nước đi…' : 'Chưa có gợi ý. Bấm “Gợi ý nước đi”.';
+      box.appendChild(d); return;
+    }
+    const bestRed = redScore(h.cands[0].score, pos.sd);
+    h.cands.forEach((c, k) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'cand'; b.setAttribute('aria-pressed', String(k === (h.sel || 0)));
+      const p = pos.clone(); const line = [];
+      for (const mv of (c.pv || []).slice(0, 7)) { if (!p.legalMove(mv)) break; line.push(X.moveToVN(p, mv)); p.makeMove(mv); }
+      const why = describeMove(pos, c.move);
+      const red = redScore(c.score, pos.sd);
+      let scoreTxt = h.scored ? fmtScore(red) : '';
+      const gap = h.scored && k > 0 ? Math.abs(bestRed - red) : 0;
+      b.innerHTML = `<span class="rank k${k % 3}">${k + 1}</span>` +
+        `<span class="mv">${X.moveToVN(pos, c.move)}${why ? `<small class="why">${why}</small>` : ''}</span>` +
+        `<span class="sc">${scoreTxt}</span>` +
+        `<span class="line">${line.length > 1 ? 'Diễn biến: ' + line.slice(1).join('  ') : ''}${gap >= 5 && Math.abs(red) < X.WIN ? ` · kém nước 1 khoảng ${(gap / 100).toFixed(2)}` : ''}</span>`;
+      b.onclick = () => { h.sel = k; render(); renderCands(pos); };
+      box.appendChild(b);
+    });
+  }
+
+  function showCands(pos, list, label) {
+    if (!list || !list.length || !list[0].move) return;
+    const key = posKey(pos);
+    const sel = S.hint && S.hint.fenKey === key ? Math.min(S.hint.sel || 0, list.length - 1) : 0;
+    S.hint = { fenKey: key, cands: list.map((r) => ({ move: r.move, score: r.score, pv: r.pv || [r.move], depth: r.depth })), sel, scored: true };
+    const r = list[0];
     const nps = r.time ? Math.round(r.nodes / r.time) : 0;
-    $('aMeta').textContent = label || `Độ sâu ${r.depth} · ${(r.nodes / 1000).toFixed(0)}k thế · ${nps}k thế/giây`;
+    $('aMeta').textContent = label || (r.depth ? `độ sâu ${r.depth}${nps ? ` · ${nps}k thế/giây` : ''}` : '');
+    $('candMeta').textContent = list.length > 1 ? `${list.length} phương án` : '';
     setEval(r.score, pos.sd);
-    S.hint = { fenKey: posKey(pos), move: r.move, pv: r.pv, score: r.score };
+    renderEvalCard(pos); renderCands(pos);
   }
 
   function clearAnalysis(msg) {
-    $('aBest').textContent = '—'; $('aScore').textContent = ''; $('aPv').textContent = '';
-    $('aMeta').textContent = msg || '';
     S.hint = null;
+    $('aMeta').textContent = msg || '';
+    $('candMeta').textContent = '';
     const pos = currentPos();
+    renderEvalCard(pos); renderCands(pos);
     const m = recall(pos);
     const mm = $('aMemory');
-    if (m) { mm.hidden = false; mm.textContent = `Máy đã học thế này: ${X.moveToVN(pos, m.move)} (độ sâu ${m.depth}, ${X.scoreText(m.score, pos.sd)})`; }
+    if (m) { mm.hidden = false; mm.textContent = `Máy đã học thế này: ${X.moveToVN(pos, m.move)} (độ sâu ${m.depth}, ${fmtScore(redScore(m.score, pos.sd))}).`; }
     else mm.hidden = true;
   }
 
-  async function analyze(time) {
+  async function analyze(time, multi) {
     const pos = currentPos();
     if (gameResult(pos) && !S.train) return null;
     const fen = S.train ? S.train.fen : S.startFen;
     const moves = S.train ? [] : S.moves.slice(0, viewIndex());
     const key = posKey(pos);
-    $('thinkChip').hidden = false;
-    const r = await engine.search(fen, moves, time || S.time, (info) => {
-      if (posKey(currentPos()) === key) { showAnalysis(pos, info); render(); }
-    });
-    $('thinkChip').hidden = true;
-    if (!r || posKey(currentPos()) !== key) return null;
-    learn(pos, r);
-    showAnalysis(pos, r);
+    const partial = [];
+    setThinking(true); renderEvalCard(pos); renderCands(pos);
+    let lastDraw = 0;
+    const onInfo = (info, k) => {
+      if (posKey(currentPos()) !== key) return;
+      partial[k] = info;
+      const list = []; for (const x of partial) { if (!x) break; list.push(x); }
+      const now = performance.now();
+      if (now - lastDraw < 120) return;
+      lastDraw = now;
+      showCands(pos, list); render();
+    };
+    const res = multi ? await engine.multi(fen, moves, time, 3, onInfo) : await engine.search(fen, moves, time, onInfo);
+    if (!res) return null; // bị huỷ: lần phân tích mới đã thay chỗ
+    setThinking(false);
+    if (posKey(currentPos()) !== key) return null;
+    const list = multi ? res : [res];
+    if (!list.length || !list[0].move) return null;
+    learn(pos, list[0]);
+    showCands(pos, list);
     render();
-    return r;
+    return list[0];
   }
 
   async function engineTurn() {
@@ -380,17 +616,19 @@
     const key = posKey(pos);
     let mv = bookMove(S.startFen, S.moves);
     if (mv && !pos.legalMove(mv)) mv = 0;
-    let label = 'Nước khai cuộc quen thuộc';
+    let label = 'nước khai cuộc quen thuộc';
     if (!mv) {
       const mem = recall(pos);
-      if (mem && mem.depth >= 9 && S.time <= 6000) { mv = mem.move; label = `Nhớ từ lần phân tích trước (độ sâu ${mem.depth})`; showAnalysis(pos, { ...mem, pv: [mem.move], nodes: 0, time: 0 }, label); }
+      if (mem && mem.depth >= 9 && S.time <= 6000) { mv = mem.move; label = `nhớ từ lần phân tích trước (độ sâu ${mem.depth})`; showCands(pos, [{ ...mem, pv: [mem.move], nodes: 0, time: 0 }], label); }
     }
     if (!mv) {
-      const r = await analyze(S.time);
+      const r = await analyze(S.time, false);
       if (!r || posKey(currentPos()) !== key) return;
       mv = r.move;
     } else {
-      await new Promise((res) => setTimeout(res, 350));
+      setThinking(true);
+      await new Promise((res) => setTimeout(res, 400));
+      setThinking(false);
       if (posKey(currentPos()) !== key) return;
       $('aMeta').textContent = label;
     }
@@ -415,13 +653,14 @@
 
   function afterChange() {
     engine.cancel();
-    $('thinkChip').hidden = true;
-    clearAnalysis(S.mode === 'analyze' ? 'Đang phân tích…' : '');
+    S.thinking = false;
+    clearAnalysis('');
     render();
     saveGame();
+    if (S.train || S.editing) return;
     const pos = currentPos();
-    if (S.train) return;
-    if (S.mode === 'analyze') analyze(S.time);
+    const humanTurn = S.view != null || pos.sd === S.human;
+    if (S.mode === 'analyze' || (S.autoHint && humanTurn)) setTimeout(() => analyze(S.time, true), 60);
     else if (S.view == null) setTimeout(engineTurn, 60);
   }
 
@@ -473,11 +712,16 @@
     S.mode = m;
     setPressed('modePlay', 'modeAnalyze', m === 'play');
     $('sideRow').hidden = m !== 'play';
-    $('modeHint').textContent = m === 'play'
-      ? 'Bạn đi quân của mình, máy tự đáp lại. Bấm “Gợi ý” khi cần.'
-      : 'Bạn tự đi cho cả hai bên (ví dụ chép lại ván đang đánh ngoài đời). Máy liên tục chỉ ra nước tốt nhất.';
+    renderModeHint();
     afterChange();
   }
+  function renderModeHint() {
+    $('modeHint').textContent = S.mode === 'play'
+      ? (S.autoHint ? 'Bạn đi quân của mình, máy tự đáp lại. Đến lượt bạn, máy tự chấm điểm và gợi ý 3 nước tốt nhất.' : 'Bạn đi quân của mình, máy tự đáp lại. Bấm “Gợi ý nước đi” khi cần.')
+      : 'Bạn tự đi cho cả hai bên (ví dụ chép lại ván đang đánh ngoài đời). Máy liên tục chấm điểm và gợi ý 3 nước tốt nhất.';
+  }
+  $('autoOn').onclick = () => { S.autoHint = true; store.set('kythu.autohint', true); setPressed('autoOn', 'autoOff', true); renderModeHint(); afterChange(); };
+  $('autoOff').onclick = () => { S.autoHint = false; store.set('kythu.autohint', false); setPressed('autoOn', 'autoOff', false); renderModeHint(); engine.cancel(); setThinking(false); };
   $('modePlay').onclick = () => setMode('play');
   $('modeAnalyze').onclick = () => setMode('analyze');
   $('sideRed').onclick = () => { S.human = 0; S.flipped = false; setPressed('sideRed', 'sideBlack', true); afterChange(); };
@@ -492,11 +736,11 @@
     S.view = null; S.review = null; renderReview();
     afterChange();
   };
-  $('btnHint').onclick = () => analyze(S.time);
+  $('btnHint').onclick = () => analyze(S.time, true);
   $('btnPlayBest').onclick = () => {
     const pos = currentPos();
-    if (S.hint && S.hint.fenKey === posKey(pos)) doMove(S.hint.move);
-    else analyze(S.time).then((r) => { if (r) doMove(r.move); });
+    if (S.hint && S.hint.fenKey === posKey(pos) && !S.thinking) doMove(S.hint.cands[S.hint.sel || 0].move);
+    else analyze(S.time, true).then((r) => { if (r && S.hint) doMove(S.hint.cands[S.hint.sel || 0].move); });
   };
   $('btnFlip').onclick = () => { S.flipped = !S.flipped; render(); };
   $('btnFirst').onclick = () => goto(0);
@@ -621,7 +865,7 @@
       const num = Math.floor((i + (startSd === 1 ? 1 : 0)) / 2) + 1;
       row.innerHTML = `<span class="muted">${num}${q.mover === 0 ? '.' : '…'}</span><span class="q ${q.cls}">${q.label}</span>` +
         `<span><code>${played}</code>${q.loss > 15 && best ? ` <span class="muted">· nên đi</span> <code>${best}</code> <span class="muted">(−${(q.loss / 100).toFixed(1)})</span>` : ''}</span>`;
-      row.onclick = () => { goto(i); setTimeout(() => { const pos = currentPos(); if (it.best) { showAnalysis(pos, { ...it, move: it.best, nodes: 0, time: 0 }, `Phân tích lại: nên đi ${best}`); render(); } }, 80); };
+      row.onclick = () => { goto(i); setTimeout(() => { const pos = currentPos(); if (it.best) { engine.cancel(); setThinking(false); showCands(pos, [{ ...it, move: it.best, nodes: 0, time: 0 }], `từ phân tích ván`); render(); } }, 80); };
       list.appendChild(row);
     });
     out.appendChild(list);
@@ -677,7 +921,7 @@
     } else if (T.tries >= 2) {
       T.done = true; T.item.solved = 0;
       tm.className = 'msg bad'; tm.textContent = `Chưa đúng. Nước tốt nhất là ${bestNote}. Mũi tên xanh chỉ nước đó.`;
-      S.hint = { fenKey: posKey(pos), move: best, pv: [best] };
+      S.hint = { fenKey: posKey(pos), cands: [{ move: best, score: 0, pv: [best] }], sel: 0, scored: false };
     } else {
       tm.className = 'msg bad'; tm.textContent = `${note} chưa phải nước tốt. Thử thêm một lần nữa.`;
     }
@@ -828,6 +1072,8 @@
   function restore() {
     const g = store.get('kythu.game', null);
     S.time = store.get('kythu.time', 3000);
+    S.autoHint = store.get('kythu.autohint', true) !== false;
+    setPressed('autoOn', 'autoOff', S.autoHint);
     $('thinkTime').value = String(S.time);
     if (!g) return;
     try {
@@ -851,6 +1097,7 @@
   restore();
   seedSample();
   renderLearnInfo();
+  renderModeHint();
   render();
   engine.init().then(() => {
     $('engineMode').textContent = engine.mode === 'worker' ? 'Máy tính ở luồng riêng, giao diện không bị đứng.' : 'Máy tính trên luồng chính (tối đa 4 giây).';
