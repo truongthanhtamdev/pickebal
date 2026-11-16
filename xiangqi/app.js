@@ -136,7 +136,7 @@
   const S = {
     startFen: X.START_FEN, moves: [], notes: [], view: null,
     mode: 'play', human: 0, flipped: false, time: 3000,
-    selected: -1, hint: null, analysis: null, review: null, thinking: false, autoHint: true, autoFlip: false,
+    selected: -1, hint: null, analysis: null, review: null, thinking: false, autoHint: true, autoFlip: false, autoPaused: false,
     anim: null, animKey: '', prevVi: -1,
     editing: false, edPiece: 12, edBoard: null, edSide: 0,
     train: null,
@@ -156,6 +156,7 @@
   }
 
   function gameResult(pos) {
+    if (pos.mvList.length > 400) return { winner: -1, text: 'Hoà — ván cờ đã quá 200 nước.' };
     if (pos.legalMoves().length === 0) return { winner: 1 - pos.sd, text: (pos.sd === 0 ? 'Đen' : 'Đỏ') + ' thắng — ' + (pos.inCheck() ? 'chiếu bí.' : 'đối phương hết nước đi.') };
     const rep = pos.repStatus(3);
     if (rep > 0) {
@@ -358,7 +359,10 @@
     for (let sq = 0; sq < 256; sq++) { const pc = board[sq]; if (pc) n[pc < 16 ? 0 : 1][pc & 7]++; }
     return n;
   }
-  const sideName = (sd) => (S.mode === 'play' && !S.train && !S.editing ? (sd === S.human ? 'Bạn' : 'Máy') + (sd === 0 ? ' · Đỏ' : ' · Đen') : (sd === 0 ? 'Quân Đỏ' : 'Quân Đen'));
+  const sideName = (sd) => (S.train || S.editing ? (sd === 0 ? 'Quân Đỏ' : 'Quân Đen')
+    : S.mode === 'play' ? (sd === S.human ? 'Bạn' : 'Máy') + (sd === 0 ? ' · Đỏ' : ' · Đen')
+    : S.mode === 'auto' ? (sd === 0 ? 'Máy · Đỏ' : 'Máy · Đen')
+    : (sd === 0 ? 'Quân Đỏ' : 'Quân Đen'));
 
   function renderPlayers(pos) {
     const board = S.editing ? S.edBoard : pos.board;
@@ -380,7 +384,7 @@
       let flags = '';
       if (active) {
         if (pos.inCheck()) flags += '<span class="flag check">Bị chiếu</span>';
-        if (S.thinking) flags += `<span class="flag think">${S.mode === 'play' && sd !== S.human && !S.train ? 'Đang nghĩ' : 'Đang tính'}</span>`;
+        if (S.thinking) flags += `<span class="flag think">${(S.mode === 'play' && sd !== S.human) || (S.mode === 'auto' && !S.autoPaused) ? 'Đang nghĩ' : 'Đang tính'}</span>`;
         else flags += '<span class="flag turn">Đến lượt</span>';
       }
       const box = $(id);
@@ -612,7 +616,9 @@
 
   async function engineTurn() {
     const pos = currentPos();
-    if (S.mode !== 'play' || S.view != null || S.train || pos.sd === S.human || gameResult(pos)) return;
+    const engineSide = S.mode === 'play' ? pos.sd !== S.human : S.mode === 'auto' && !S.autoPaused;
+    if (!engineSide || S.view != null || S.train || gameResult(pos)) return;
+    const t0 = performance.now();
     const key = posKey(pos);
     let mv = bookMove(S.startFen, S.moves);
     if (mv && !pos.legalMove(mv)) mv = 0;
@@ -625,11 +631,19 @@
       const r = await analyze(S.time, false);
       if (!r || posKey(currentPos()) !== key) return;
       mv = r.move;
+      // máy tự đấu: giữ mỗi nước ít nhất 0,7 giây để người xem kịp theo dõi
+      const wait = S.mode === 'auto' ? 700 - (performance.now() - t0) : 0;
+      if (wait > 0) {
+        setThinking(true);
+        await new Promise((res) => setTimeout(res, wait));
+        setThinking(false);
+        if (posKey(currentPos()) !== key || (S.mode === 'auto' && S.autoPaused)) return;
+      }
     } else {
       setThinking(true);
-      await new Promise((res) => setTimeout(res, 400));
+      await new Promise((res) => setTimeout(res, S.mode === 'auto' ? 700 : 400));
       setThinking(false);
-      if (posKey(currentPos()) !== key) return;
+      if (posKey(currentPos()) !== key || (S.mode === 'auto' && S.autoPaused)) return;
       $('aMeta').textContent = label;
     }
     doMove(mv, true);
@@ -660,6 +674,11 @@
     saveGame();
     if (S.train || S.editing) return;
     const pos = currentPos();
+    if (S.mode === 'auto') {
+      if (!S.autoPaused && S.view == null) setTimeout(engineTurn, 60);
+      else if (S.autoHint) setTimeout(() => analyze(S.time, true), 60);
+      return;
+    }
     const humanTurn = S.mode !== 'play' || S.view != null || pos.sd === S.human;
     if (S.mode === 'analyze' || (S.autoHint && humanTurn)) setTimeout(() => analyze(S.time, true), 60);
     else if (S.view == null) setTimeout(engineTurn, 60);
@@ -691,6 +710,7 @@
     const pos = currentPos();
     if (!S.train && gameResult(pos)) return;
     if (!S.train && S.mode === 'play' && pos.sd !== S.human && S.view == null) return;
+    if (!S.train && S.mode === 'auto' && !S.autoPaused && S.view == null) return;
     const pc = pos.board[sq];
     const mine = pc && ((pc < 16 ? 0 : 1) === pos.sd);
     if (S.selected >= 0) {
@@ -711,7 +731,10 @@
   function setPressed(a, b, first) { $(a).setAttribute('aria-pressed', String(first)); $(b).setAttribute('aria-pressed', String(!first)); }
   function setSeg(ids, active) { for (const id of ids) $(id).setAttribute('aria-pressed', String(id === active)); }
   function syncControls() {
-    setSeg(['modePlay', 'modeTwo', 'modeAnalyze'], { play: 'modePlay', two: 'modeTwo', analyze: 'modeAnalyze' }[S.mode]);
+    setSeg(['modePlay', 'modeTwo', 'modeAuto', 'modeAnalyze'], { play: 'modePlay', two: 'modeTwo', auto: 'modeAuto', analyze: 'modeAnalyze' }[S.mode]);
+    $('autoRow').hidden = S.mode !== 'auto';
+    $('btnAutoPause').textContent = S.autoPaused ? 'Tiếp tục' : 'Tạm dừng';
+    $('btnAutoPause').className = 'btn ' + (S.autoPaused ? 'jade' : '');
     setPressed('sideRed', 'sideBlack', S.human === 0);
     setPressed('flipOn', 'flipOff', S.autoFlip);
     $('sideRow').hidden = S.mode !== 'play';
@@ -736,7 +759,9 @@
     const hint = S.autoHint ? ' Đến lượt nào, máy tự chấm điểm và gợi ý 3 nước tốt nhất cho bên đó.' : ' Bấm “Gợi ý nước đi” khi cần.';
     $('modeHint').textContent = S.mode === 'play'
       ? 'Bạn đi quân của mình, máy tự đáp lại. Bấm “Đổi bên” để đổi quân với máy bất cứ lúc nào.' + (S.autoHint ? ' Đến lượt bạn, máy tự gợi ý 3 nước tốt nhất.' : ' Bấm “Gợi ý nước đi” khi cần.')
-      : S.mode === 'two'
+      : S.mode === 'auto'
+        ? 'Máy tự đi cho cả hai bên, bạn ngồi xem. Chỉnh “Máy nghĩ mỗi nước” để máy đánh nhanh hay chậm. Tạm dừng thì bạn có thể tự đi chen vào một nước, rồi bấm “Tiếp tục” để máy đánh tiếp từ thế đó.'
+        : S.mode === 'two'
         ? 'Hai người đánh trên cùng một máy, hoặc bạn tự điều khiển cả hai bên. Bật “Tự xoay bàn” để bên đến lượt luôn ở phía dưới.' + hint
         : 'Bạn tự đi cho cả hai bên (ví dụ chép lại ván đang đánh ngoài đời). Máy luôn chấm điểm và gợi ý 3 nước tốt nhất.';
   }
@@ -744,6 +769,14 @@
   $('autoOff').onclick = () => { S.autoHint = false; store.set('kythu.autohint', false); setPressed('autoOn', 'autoOff', false); renderModeHint(); engine.cancel(); setThinking(false); };
   $('modePlay').onclick = () => setMode('play');
   $('modeTwo').onclick = () => setMode('two');
+  $('modeAuto').onclick = () => { S.autoPaused = false; S.flipped = false; setMode('auto'); };
+  $('btnAutoPause').onclick = () => {
+    S.autoPaused = !S.autoPaused;
+    syncControls();
+    if (S.autoPaused) { engine.cancel(); setThinking(false); clearAnalysis(''); render(); if (S.autoHint) analyze(S.time, true); }
+    else afterChange();
+  };
+  $('btnAutoRestart').onclick = () => { S.autoPaused = false; syncControls(); $('btnNew').onclick(); };
   $('modeAnalyze').onclick = () => setMode('analyze');
   $('sideRed').onclick = () => setHuman(0);
   $('sideBlack').onclick = () => setHuman(1);
@@ -754,6 +787,7 @@
   $('btnNew').onclick = () => { exitTrain(); S.startFen = X.START_FEN; S.moves = []; S.notes = []; S.view = null; S.review = null; renderReview(); afterChange(); };
   $('btnUndo').onclick = () => {
     if (S.train) return;
+    if (S.mode === 'auto') { S.autoPaused = true; syncControls(); }
     let n = S.mode === 'play' ? (buildPos().sd === S.human ? 2 : 1) : 1;
     n = Math.min(n, S.moves.length);
     S.moves = S.moves.slice(0, S.moves.length - n); S.notes = S.notes.slice(0, S.moves.length);
@@ -823,7 +857,7 @@
       const lv = LEVELS.find((l) => loss <= l.max);
       const mover = (start.sd + i) % 2;
       quality.push({ ...lv, loss, mover });
-      const isHumanMove = S.mode !== 'play' || mover === S.human;
+      const isHumanMove = S.mode === 'two' || S.mode === 'analyze' || (S.mode === 'play' && mover === S.human);
       if (loss > 130 && isHumanMove && items[i].best) {
         const p = new X.Position().fromFen(fen);
         for (let j = 0; j < i; j++) p.makeMove(moves[j]);
@@ -1104,7 +1138,8 @@
     if (!g) return;
     try {
       loadPosition(g.fen, g.moves.map(X.iccsToMove));
-      S.mode = ['analyze', 'two'].includes(g.mode) ? g.mode : 'play';
+      S.mode = ['analyze', 'two', 'auto'].includes(g.mode) ? g.mode : 'play';
+      S.autoPaused = S.mode === 'auto';
       S.human = g.human === 1 ? 1 : 0; S.flipped = S.mode === 'play' && S.human === 1;
     } catch (e) { S.startFen = X.START_FEN; S.moves = []; S.notes = []; }
   }

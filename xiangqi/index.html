@@ -119,6 +119,7 @@
 
   /* Bảng điều khiển */
   .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; min-width: 0; box-shadow: var(--shadow); overflow: hidden; }
+  .seg { flex-wrap: wrap; }
   .tabs { display: flex; gap: 4px; padding: 6px; margin: 12px 12px 0; background: var(--surface-2); border-radius: 12px; overflow-x: auto; }
   .tabs button { flex: 1; border: 0; background: none; padding: 9px 10px; font: inherit; font-weight: 600; font-size: 14px; color: var(--muted); cursor: pointer; border-radius: 9px; white-space: nowrap; }
   .tabs button[aria-selected="true"] { color: var(--fg); background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
@@ -243,6 +244,7 @@
           <div class="seg" role="group" aria-label="Chế độ">
             <button id="modePlay" aria-pressed="true">Đấu với máy</button>
             <button id="modeTwo" aria-pressed="false">Hai người</button>
+            <button id="modeAuto" aria-pressed="false">Máy tự đấu</button>
             <button id="modeAnalyze" aria-pressed="false">Phân tích</button>
           </div>
         </div>
@@ -251,6 +253,13 @@
           <div class="seg" role="group" aria-label="Bạn cầm quân">
             <button id="sideRed" aria-pressed="true">Quân Đỏ</button>
             <button id="sideBlack" aria-pressed="false">Quân Đen</button>
+          </div>
+        </div>
+        <div class="group" id="autoRow" hidden>
+          <h3>Điều khiển trận</h3>
+          <div class="row">
+            <button class="btn jade" id="btnAutoPause">Tạm dừng</button>
+            <button class="btn" id="btnAutoRestart">Đấu ván mới</button>
           </div>
         </div>
         <div class="group" id="flipRow" hidden>
