@@ -238,11 +238,12 @@
 
     <div class="tab" id="pane-play">
       <div class="settings">
-        <div class="group">
+        <div class="group" style="grid-column: 1 / -1">
           <h3>Chế độ</h3>
           <div class="seg" role="group" aria-label="Chế độ">
             <button id="modePlay" aria-pressed="true">Đấu với máy</button>
-            <button id="modeAnalyze" aria-pressed="false">Phân tích tự do</button>
+            <button id="modeTwo" aria-pressed="false">Hai người</button>
+            <button id="modeAnalyze" aria-pressed="false">Phân tích</button>
           </div>
         </div>
         <div class="group" id="sideRow">
@@ -250,6 +251,13 @@
           <div class="seg" role="group" aria-label="Bạn cầm quân">
             <button id="sideRed" aria-pressed="true">Quân Đỏ</button>
             <button id="sideBlack" aria-pressed="false">Quân Đen</button>
+          </div>
+        </div>
+        <div class="group" id="flipRow" hidden>
+          <h3>Tự xoay bàn theo lượt</h3>
+          <div class="seg" role="group" aria-label="Tự xoay bàn theo lượt đi">
+            <button id="flipOn" aria-pressed="false">Bật</button>
+            <button id="flipOff" aria-pressed="true">Tắt</button>
           </div>
         </div>
         <div class="group">
@@ -275,6 +283,7 @@
       <div class="actions">
         <button class="btn jade" id="btnHint">Gợi ý nước đi</button>
         <button class="btn" id="btnPlayBest">Đi nước số 1</button>
+        <button class="btn" id="btnSwap" title="Đổi quân giữa bạn và máy, ván cờ vẫn giữ nguyên">Đổi bên</button>
         <button class="btn" id="btnUndo">Đi lại</button>
         <button class="btn danger" id="btnNew">Ván mới</button>
       </div>

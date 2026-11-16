@@ -136,7 +136,7 @@
   const S = {
     startFen: X.START_FEN, moves: [], notes: [], view: null,
     mode: 'play', human: 0, flipped: false, time: 3000,
-    selected: -1, hint: null, analysis: null, review: null, thinking: false, autoHint: true,
+    selected: -1, hint: null, analysis: null, review: null, thinking: false, autoHint: true, autoFlip: false,
     anim: null, animKey: '', prevVi: -1,
     editing: false, edPiece: 12, edBoard: null, edSide: 0,
     train: null,
@@ -654,12 +654,13 @@
   function afterChange() {
     engine.cancel();
     S.thinking = false;
+    if (S.mode === 'two' && S.autoFlip && !S.train && !S.editing) S.flipped = currentPos().sd === 1;
     clearAnalysis('');
     render();
     saveGame();
     if (S.train || S.editing) return;
     const pos = currentPos();
-    const humanTurn = S.view != null || pos.sd === S.human;
+    const humanTurn = S.mode !== 'play' || S.view != null || pos.sd === S.human;
     if (S.mode === 'analyze' || (S.autoHint && humanTurn)) setTimeout(() => analyze(S.time, true), 60);
     else if (S.view == null) setTimeout(engineTurn, 60);
   }
@@ -708,24 +709,47 @@
 
   // ---------- Điều khiển ----------
   function setPressed(a, b, first) { $(a).setAttribute('aria-pressed', String(first)); $(b).setAttribute('aria-pressed', String(!first)); }
+  function setSeg(ids, active) { for (const id of ids) $(id).setAttribute('aria-pressed', String(id === active)); }
+  function syncControls() {
+    setSeg(['modePlay', 'modeTwo', 'modeAnalyze'], { play: 'modePlay', two: 'modeTwo', analyze: 'modeAnalyze' }[S.mode]);
+    setPressed('sideRed', 'sideBlack', S.human === 0);
+    setPressed('flipOn', 'flipOff', S.autoFlip);
+    $('sideRow').hidden = S.mode !== 'play';
+    $('btnSwap').hidden = S.mode !== 'play';
+    $('flipRow').hidden = S.mode !== 'two';
+    renderModeHint();
+  }
   function setMode(m) {
     S.mode = m;
-    setPressed('modePlay', 'modeAnalyze', m === 'play');
-    $('sideRow').hidden = m !== 'play';
-    renderModeHint();
+    if (m === 'play') S.flipped = S.human === 1;
+    syncControls();
+    afterChange();
+  }
+  // Đổi bên giữa chừng: bạn nhận quân bên kia, máy cầm quân bạn vừa bỏ
+  function setHuman(sd) {
+    if (S.train) return;
+    S.human = sd; S.flipped = sd === 1;
+    syncControls();
     afterChange();
   }
   function renderModeHint() {
+    const hint = S.autoHint ? ' Đến lượt nào, máy tự chấm điểm và gợi ý 3 nước tốt nhất cho bên đó.' : ' Bấm “Gợi ý nước đi” khi cần.';
     $('modeHint').textContent = S.mode === 'play'
-      ? (S.autoHint ? 'Bạn đi quân của mình, máy tự đáp lại. Đến lượt bạn, máy tự chấm điểm và gợi ý 3 nước tốt nhất.' : 'Bạn đi quân của mình, máy tự đáp lại. Bấm “Gợi ý nước đi” khi cần.')
-      : 'Bạn tự đi cho cả hai bên (ví dụ chép lại ván đang đánh ngoài đời). Máy liên tục chấm điểm và gợi ý 3 nước tốt nhất.';
+      ? 'Bạn đi quân của mình, máy tự đáp lại. Bấm “Đổi bên” để đổi quân với máy bất cứ lúc nào.' + (S.autoHint ? ' Đến lượt bạn, máy tự gợi ý 3 nước tốt nhất.' : ' Bấm “Gợi ý nước đi” khi cần.')
+      : S.mode === 'two'
+        ? 'Hai người đánh trên cùng một máy, hoặc bạn tự điều khiển cả hai bên. Bật “Tự xoay bàn” để bên đến lượt luôn ở phía dưới.' + hint
+        : 'Bạn tự đi cho cả hai bên (ví dụ chép lại ván đang đánh ngoài đời). Máy luôn chấm điểm và gợi ý 3 nước tốt nhất.';
   }
   $('autoOn').onclick = () => { S.autoHint = true; store.set('kythu.autohint', true); setPressed('autoOn', 'autoOff', true); renderModeHint(); afterChange(); };
   $('autoOff').onclick = () => { S.autoHint = false; store.set('kythu.autohint', false); setPressed('autoOn', 'autoOff', false); renderModeHint(); engine.cancel(); setThinking(false); };
   $('modePlay').onclick = () => setMode('play');
+  $('modeTwo').onclick = () => setMode('two');
   $('modeAnalyze').onclick = () => setMode('analyze');
-  $('sideRed').onclick = () => { S.human = 0; S.flipped = false; setPressed('sideRed', 'sideBlack', true); afterChange(); };
-  $('sideBlack').onclick = () => { S.human = 1; S.flipped = true; setPressed('sideRed', 'sideBlack', false); afterChange(); };
+  $('sideRed').onclick = () => setHuman(0);
+  $('sideBlack').onclick = () => setHuman(1);
+  $('btnSwap').onclick = () => setHuman(1 - S.human);
+  $('flipOn').onclick = () => { S.autoFlip = true; store.set('kythu.autoflip', true); syncControls(); afterChange(); };
+  $('flipOff').onclick = () => { S.autoFlip = false; store.set('kythu.autoflip', false); syncControls(); };
   $('thinkTime').onchange = (e) => { S.time = Number(e.target.value); store.set('kythu.time', S.time); };
   $('btnNew').onclick = () => { exitTrain(); S.startFen = X.START_FEN; S.moves = []; S.notes = []; S.view = null; S.review = null; renderReview(); afterChange(); };
   $('btnUndo').onclick = () => {
@@ -799,7 +823,7 @@
       const lv = LEVELS.find((l) => loss <= l.max);
       const mover = (start.sd + i) % 2;
       quality.push({ ...lv, loss, mover });
-      const isHumanMove = S.mode === 'analyze' || mover === S.human;
+      const isHumanMove = S.mode !== 'play' || mover === S.human;
       if (loss > 130 && isHumanMove && items[i].best) {
         const p = new X.Position().fromFen(fen);
         for (let j = 0; j < i; j++) p.makeMove(moves[j]);
@@ -932,6 +956,7 @@
   function exitTrain() {
     if (!S.train) return;
     S.train = null; S.flipped = S.human === 1 && S.mode === 'play';
+    if (S.mode === 'two' && S.autoFlip) S.flipped = currentPos().sd === 1;
     $('btnTrainNext').hidden = true; $('btnTrainExit').hidden = true; $('trainMsg').hidden = true;
     afterChange();
   }
@@ -1073,16 +1098,14 @@
     const g = store.get('kythu.game', null);
     S.time = store.get('kythu.time', 3000);
     S.autoHint = store.get('kythu.autohint', true) !== false;
+    S.autoFlip = store.get('kythu.autoflip', false) === true;
     setPressed('autoOn', 'autoOff', S.autoHint);
     $('thinkTime').value = String(S.time);
     if (!g) return;
     try {
       loadPosition(g.fen, g.moves.map(X.iccsToMove));
-      S.mode = g.mode === 'analyze' ? 'analyze' : 'play';
-      S.human = g.human === 1 ? 1 : 0; S.flipped = S.human === 1;
-      setPressed('sideRed', 'sideBlack', S.human === 0);
-      setPressed('modePlay', 'modeAnalyze', S.mode === 'play');
-      $('sideRow').hidden = S.mode !== 'play';
+      S.mode = ['analyze', 'two'].includes(g.mode) ? g.mode : 'play';
+      S.human = g.human === 1 ? 1 : 0; S.flipped = S.mode === 'play' && S.human === 1;
     } catch (e) { S.startFen = X.START_FEN; S.moves = []; S.notes = []; }
   }
 
@@ -1097,7 +1120,7 @@
   restore();
   seedSample();
   renderLearnInfo();
-  renderModeHint();
+  syncControls();
   render();
   engine.init().then(() => {
     $('engineMode').textContent = engine.mode === 'worker' ? 'Máy tính ở luồng riêng, giao diện không bị đứng.' : 'Máy tính trên luồng chính (tối đa 4 giây).';
