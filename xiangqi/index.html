@@ -1,0 +1,292 @@
+<meta charset="utf-8">
+<title>Kỳ Thủ Cờ Tướng</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Phần mềm chơi, gợi ý, phân tích và học cờ tướng.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@700&text=%E5%B8%A5%E4%BB%95%E7%9B%B8%E5%82%8C%E4%BF%A5%E7%82%AE%E5%85%B5%E5%B0%87%E5%A3%AB%E8%B1%A1%E9%A6%AC%E8%BB%8A%E7%A0%B2%E5%8D%92%E6%A5%9A%E6%B2%B3%E6%BC%A2%E7%95%8C&display=swap">
+<style>
+  /* Bố cục: bàn cờ gỗ bên trái là trung tâm, bảng điều khiển dạng sổ tay bên phải; điện thoại xếp chồng */
+  :root {
+    --bg: #e9ede6;
+    --surface: #f7f8f4;
+    --line: #cfd6cb;
+    --fg: #1d221e;
+    --muted: #5d685f;
+    --wood: #e2b877;
+    --wood-edge: #a8773b;
+    --wood-line: #5a3a17;
+    --piece: #f6e7c8;
+    --piece-ring: #c99a55;
+    --red: #b3261e;
+    --ink: #1c1a18;
+    --jade: #1f7a57;
+    --jade-soft: #d6eadf;
+    --warn: #b7791f;
+    --bad: #c0392b;
+    --font-ui: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --font-han: "Noto Serif SC", "Songti SC", "SimSun", "STSong", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121614; --surface: #1b201d; --line: #2e3631; --fg: #e5ebe6; --muted: #98a49b;
+      --wood: #c99a5b; --wood-edge: #7d5426; --wood-line: #3d260e; --piece: #f0dfbd; --piece-ring: #a97a3c;
+      --red: #b3261e; --ink: #1c1a18; --jade: #4cc08f; --jade-soft: #1d3a2d; --warn: #e0a84a; --bad: #ef6b5b;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121614; --surface: #1b201d; --line: #2e3631; --fg: #e5ebe6; --muted: #98a49b;
+    --wood: #c99a5b; --wood-edge: #7d5426; --wood-line: #3d260e; --piece: #f0dfbd; --piece-ring: #a97a3c;
+    --red: #b3261e; --ink: #1c1a18; --jade: #4cc08f; --jade-soft: #1d3a2d; --warn: #e0a84a; --bad: #ef6b5b;
+    color-scheme: dark;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { background: var(--bg); color: var(--fg); }
+  body { font-family: var(--font-ui); font-size: 15px; line-height: 1.5; margin: 0;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 40px; }
+  .app { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 600px) minmax(0, 1fr); gap: 24px; align-items: start; }
+  @media (max-width: 900px) { .app { grid-template-columns: minmax(0, 1fr); } }
+  header.brand { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header.brand h1 { font-size: 26px; margin: 0; letter-spacing: -0.01em; font-weight: 700; text-wrap: balance; }
+  header.brand h1 .han { font-family: var(--font-han); color: var(--red); margin-right: 6px; }
+  header.brand p { margin: 0; color: var(--muted); }
+
+  .board-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .board-wrap { background: var(--wood); border: 3px solid var(--wood-edge); border-radius: 10px; padding: 6px; box-shadow: 0 10px 30px -18px rgba(40, 25, 5, .6); }
+  #board { display: block; width: 100%; height: auto; touch-action: manipulation; user-select: none; -webkit-user-select: none; cursor: pointer; }
+  .statusbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .turn { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--piece-ring); }
+  .dot.red { background: var(--red); } .dot.black { background: var(--ink); }
+  .chip { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; background: var(--line); color: var(--fg); }
+  .chip.check { background: var(--bad); color: #fff; }
+  .chip.think { background: var(--jade-soft); color: var(--jade); }
+  .evalbar { position: relative; height: 12px; border-radius: 6px; overflow: hidden; background: var(--ink); border: 1px solid var(--line); }
+  .evalbar > div { position: absolute; inset: 0 auto 0 0; background: var(--red); transition: width .4s ease; }
+  .evalrow { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .nav { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tabs button { flex: 1; border: 0; background: none; padding: 12px 10px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--red); }
+  .tab { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .group { display: flex; flex-direction: column; gap: 8px; }
+  .group h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button.btn { font: inherit; font-weight: 600; font-size: 14px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+  button.btn:hover { border-color: var(--muted); }
+  button.btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+  button.btn.jade { background: var(--jade); border-color: var(--jade); color: #fff; }
+  button.btn:disabled { opacity: .45; cursor: default; }
+  button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--jade); outline-offset: 2px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 14px; border: 0; background: var(--bg); color: var(--muted); padding: 7px 12px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); font-weight: 600; }
+  select, textarea, input[type="text"] { font: inherit; font-size: 14px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  textarea { width: 100%; font-family: var(--font-mono); font-size: 12px; resize: vertical; }
+
+  .analysis { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+  .analysis .best { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .analysis .best b { font-family: var(--font-mono); font-size: 22px; color: var(--jade); }
+  .analysis .score { font-family: var(--font-mono); font-size: 16px; font-weight: 500; }
+  .analysis .meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .analysis .pv { font-family: var(--font-mono); font-size: 13px; color: var(--fg); overflow-wrap: anywhere; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .msg { padding: 10px 12px; border-radius: 8px; background: var(--jade-soft); color: var(--fg); font-size: 14px; }
+  .msg.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); }
+
+  .moves { display: grid; grid-template-columns: 2.4em 1fr 1fr; font-family: var(--font-mono); font-size: 14px; max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+  .moves span { padding: 3px 6px; }
+  .moves .no { color: var(--muted); text-align: right; }
+  .moves .mv { cursor: pointer; border-radius: 4px; display: flex; gap: 4px; align-items: center; }
+  .moves .mv:hover { background: var(--line); }
+  .moves .mv.cur { background: var(--fg); color: var(--bg); }
+  .tag { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+  .review-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
+  .rv { display: grid; grid-template-columns: 2.6em 5.5em 1fr; gap: 8px; align-items: center; font-size: 13px; padding: 4px 6px; border-radius: 6px; cursor: pointer; border: 0; background: none; color: var(--fg); text-align: left; font: inherit; font-size: 13px; }
+  .rv:hover { background: var(--line); }
+  .rv code { font-family: var(--font-mono); }
+  .q { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; color: #fff; text-align: center; white-space: nowrap; }
+  .q-best { background: var(--jade); } .q-good { background: #3f8f6b; } .q-inacc { background: var(--warn); } .q-mist { background: #d2691e; } .q-blun { background: var(--bad); }
+  .summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .summary .side { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); font-size: 13px; }
+  .summary .side strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .chart { width: 100%; height: 90px; display: block; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  .progress { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .progress > div { height: 100%; background: var(--jade); width: 0; transition: width .2s; }
+
+  .palette { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+  .palette button { aspect-ratio: 1; max-width: 100%; border-radius: 50%; border: 2px solid var(--piece-ring); background: var(--piece); font-family: var(--font-han); font-size: 20px; cursor: pointer; padding: 0; }
+  .palette button.r { color: var(--red); } .palette button.b { color: var(--ink); }
+  .palette button[aria-pressed="true"] { outline: 3px solid var(--jade); outline-offset: 1px; }
+  .legend { font-size: 13px; color: var(--muted); }
+  .legend code { font-family: var(--font-mono); color: var(--fg); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="app">
+  <header class="brand">
+    <h1><span class="han">帥</span>Kỳ Thủ Cờ Tướng</h1>
+    <p>Chơi với máy, xin gợi ý, phân tích ván và luyện lại nước sai.</p>
+  </header>
+
+  <section class="board-col" aria-label="Bàn cờ">
+    <div class="statusbar">
+      <div class="turn"><span id="turnDot" class="dot red"></span><span id="turnText">Đỏ đi</span> <span id="checkChip" class="chip check" hidden>Chiếu!</span> <span id="thinkChip" class="chip think" hidden>Máy đang nghĩ…</span></div>
+      <div class="nav">
+        <button class="btn" id="btnFirst" title="Về đầu ván" aria-label="Về đầu ván">⏮</button>
+        <button class="btn" id="btnPrev" title="Lùi một nước (phím ←)" aria-label="Lùi một nước">◀</button>
+        <button class="btn" id="btnNext" title="Tiến một nước (phím →)" aria-label="Tiến một nước">▶</button>
+        <button class="btn" id="btnLast" title="Về nước mới nhất" aria-label="Về nước mới nhất">⏭</button>
+      </div>
+    </div>
+    <div class="board-wrap"><svg id="board" viewBox="0 0 520 596" role="img" aria-label="Bàn cờ tướng"></svg></div>
+    <div class="evalrow"><span>Đỏ</span><div class="evalbar"><div id="evalFill" style="width:50%"></div></div><span>Đen</span></div>
+    <div id="gameMsg" class="msg" hidden></div>
+  </section>
+
+  <section class="panel">
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-play" aria-selected="true" data-tab="play">Đánh cờ</button>
+      <button role="tab" id="tab-learn" aria-selected="false" data-tab="learn">Học &amp; phân tích</button>
+      <button role="tab" id="tab-edit" aria-selected="false" data-tab="edit">Xếp cờ</button>
+    </div>
+
+    <div class="tab" id="pane-play">
+      <div class="group">
+        <h3>Chế độ</h3>
+        <div class="seg" role="group" aria-label="Chế độ">
+          <button id="modePlay" aria-pressed="true">Đấu với máy</button>
+          <button id="modeAnalyze" aria-pressed="false">Phân tích tự do</button>
+        </div>
+        <div class="row" id="sideRow">
+          <span class="muted">Bạn cầm</span>
+          <div class="seg" role="group" aria-label="Bạn cầm quân">
+            <button id="sideRed" aria-pressed="true">Đỏ</button>
+            <button id="sideBlack" aria-pressed="false">Đen</button>
+          </div>
+        </div>
+        <p class="muted" id="modeHint">Bạn đi quân của mình, máy tự đáp lại. Bấm “Gợi ý” khi cần.</p>
+      </div>
+      <div class="group">
+        <h3>Thời gian máy nghĩ mỗi nước</h3>
+        <div class="row">
+          <select id="thinkTime" aria-label="Thời gian máy nghĩ">
+            <option value="500">0,5 giây (dễ)</option>
+            <option value="1500">1,5 giây</option>
+            <option value="3000" selected>3 giây</option>
+            <option value="6000">6 giây</option>
+            <option value="12000">12 giây</option>
+            <option value="25000">25 giây (mạnh nhất)</option>
+          </select>
+          <span class="muted" id="engineMode"></span>
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btnNew">Ván mới</button>
+        <button class="btn" id="btnUndo">Đi lại</button>
+        <button class="btn jade" id="btnHint">Gợi ý</button>
+        <button class="btn" id="btnPlayBest">Đi nước gợi ý</button>
+        <button class="btn" id="btnFlip">Lật bàn</button>
+      </div>
+      <div class="analysis" aria-live="polite">
+        <div class="best"><span class="muted">Nước tốt nhất</span><b id="aBest">—</b><span class="score" id="aScore"></span></div>
+        <div class="pv" id="aPv"></div>
+        <div class="meta" id="aMeta">Bấm “Gợi ý” hoặc chuyển sang “Phân tích tự do”.</div>
+        <div class="meta" id="aMemory" hidden></div>
+      </div>
+      <div class="group">
+        <h3>Biên bản ván cờ</h3>
+        <div class="moves" id="moveList"></div>
+      </div>
+    </div>
+
+    <div class="tab" id="pane-learn" hidden>
+      <div class="group">
+        <h3>Phân tích lại cả ván</h3>
+        <p class="muted">Máy chấm từng nước: tốt nhất, tốt, thiếu chính xác, sai lầm, sai lầm nghiêm trọng, kèm nước nên đi. Nước sai của bạn được lưu vào sổ để luyện lại.</p>
+        <div class="row">
+          <select id="reviewTime" aria-label="Độ kỹ khi phân tích">
+            <option value="400">Nhanh (0,4 giây/nước)</option>
+            <option value="1000" selected>Vừa (1 giây/nước)</option>
+            <option value="2500">Kỹ (2,5 giây/nước)</option>
+          </select>
+          <button class="btn primary" id="btnReview">Phân tích ván</button>
+          <button class="btn" id="btnReviewStop" hidden>Dừng</button>
+        </div>
+        <div class="progress" id="reviewProg" hidden><div></div></div>
+        <div id="reviewOut"></div>
+      </div>
+      <div class="group">
+        <h3>Luyện lại nước sai</h3>
+        <p class="muted" id="trainInfo"></p>
+        <div class="row">
+          <button class="btn jade" id="btnTrain">Bắt đầu luyện</button>
+          <button class="btn" id="btnTrainNext" hidden>Bài tiếp</button>
+          <button class="btn" id="btnTrainExit" hidden>Thoát luyện tập</button>
+        </div>
+        <div id="trainMsg" class="msg" hidden></div>
+      </div>
+      <div class="group">
+        <h3>Bộ nhớ của máy</h3>
+        <p class="muted" id="memInfo"></p>
+        <div class="row">
+          <button class="btn" id="btnMemExport">Xuất bộ nhớ</button>
+          <button class="btn" id="btnMemImport">Nhập bộ nhớ</button>
+          <button class="btn" id="btnMemClear">Xoá bộ nhớ</button>
+        </div>
+        <textarea id="memText" rows="3" hidden aria-label="Dữ liệu bộ nhớ" placeholder="Dán dữ liệu bộ nhớ đã xuất vào đây rồi bấm Nhập bộ nhớ lần nữa"></textarea>
+        <p class="muted" id="memMsg" hidden></p>
+      </div>
+    </div>
+
+    <div class="tab" id="pane-edit" hidden>
+      <div class="group">
+        <h3>Xếp thế cờ</h3>
+        <p class="muted">Chọn quân rồi chạm vào giao điểm để đặt. Chạm vào quân đang có trên bàn để xoá. Dùng để nhập thế cờ ngoài đời rồi nhờ máy tính.</p>
+        <div class="palette" id="palette"></div>
+        <div class="row">
+          <span class="muted">Bên đi trước</span>
+          <div class="seg" role="group" aria-label="Bên đi trước">
+            <button id="edRed" aria-pressed="true">Đỏ</button>
+            <button id="edBlack" aria-pressed="false">Đen</button>
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnEdStart">Thế ban đầu</button>
+          <button class="btn" id="btnEdClear">Bàn trống</button>
+          <button class="btn primary" id="btnEdDone">Xong, dùng thế này</button>
+        </div>
+        <p id="edMsg" class="muted" hidden></p>
+      </div>
+      <div class="group">
+        <h3>FEN và biên bản</h3>
+        <textarea id="fenText" rows="2" aria-label="FEN"></textarea>
+        <div class="row">
+          <button class="btn" id="btnFenLoad">Nạp FEN</button>
+          <button class="btn" id="btnFenCopy">Sao chép FEN</button>
+        </div>
+        <textarea id="iccsText" rows="3" aria-label="Biên bản ICCS" placeholder="Ví dụ: h2e2 h9g7 h0g2 i9h9"></textarea>
+        <div class="row">
+          <button class="btn" id="btnIccsLoad">Nạp biên bản (ICCS)</button>
+          <button class="btn" id="btnIccsCopy">Sao chép biên bản</button>
+        </div>
+        <p id="fenMsg" class="muted" hidden></p>
+      </div>
+      <div class="legend">
+        <strong>Cách đọc ký hiệu.</strong> <code>X</code> Xe, <code>M</code> Mã, <code>T</code> Tượng, <code>S</code> Sĩ, <code>Tg</code> Tướng, <code>P</code> Pháo, <code>B</code> Tốt.
+        Dấu <code>.</code> là tiến, <code>/</code> là thoái, <code>-</code> là bình. Ví dụ <code>P2-5</code> là pháo cột 2 bình sang cột 5,
+        <code>M8.7</code> là mã cột 8 tiến lên cột 7. Cột đánh số 1–9 từ phải sang trái theo phía người cầm quân. <code>Xt</code>/<code>Xs</code> là xe trước/xe sau khi hai quân cùng cột.
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="engine.js"></script>
+<script src="app.js"></script>
