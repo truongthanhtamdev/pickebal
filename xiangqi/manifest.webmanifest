@@ -1,0 +1,15 @@
+{
+  "name": "Kỳ Thủ Cờ Tướng",
+  "short_name": "Kỳ Thủ",
+  "description": "Chơi, gợi ý, phân tích và học khai cuộc cờ tướng. Chạy được khi không có mạng.",
+  "lang": "vi",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e6ebe7",
+  "theme_color": "#3f1c0b",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

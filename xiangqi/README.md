@@ -25,3 +25,9 @@ rồi vào http://localhost:8000.
 ## Engine (`engine.js`)
 Alpha-beta có iterative deepening, PVS, bảng băm (Zobrist), null-move, LMR, killer/history, quiescence, nối dài khi chiếu,
 xử lý chiếu dai theo luật. Chạy trong Web Worker. Bộ sinh nước đã kiểm tra bằng perft từ thế ban đầu (44 / 1.920 / 79.666 / 3.290.240).
+
+## Chơi offline
+- **Một file duy nhất**: tải `ky-thu-co-tuong-offline.html` về máy, mở bằng Chrome/Edge/Firefox/Safari là chơi, không cần mạng
+  (engine, sách khai cuộc và phông chữ đã nằm sẵn trong file). Tạo lại file sau khi sửa mã: `node build-offline.js [fonts.css]`.
+- **Cài như ứng dụng**: khi trang chạy trên web (ví dụ GitHub Pages), mở một lần rồi chọn “Thêm vào màn hình chính”;
+  `sw.js` lưu sẵn các file nên lần sau mở được cả khi mất mạng.

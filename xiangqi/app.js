@@ -22,6 +22,17 @@
         w.onmessage = (e) => { if (e.data && e.data.type === 'done') { ok = true; clearTimeout(t); resolve(true); } };
         w.postMessage({ cmd: 'search', id: -1, fen: X.START_FEN, moves: [], time: 20, depth: 1 });
       });
+      // Bản offline một file: mã engine nằm ngay trong trang (thẻ #engine-src)
+      const inline = document.getElementById('engine-src');
+      if (inline && inline.textContent.length > 1000) {
+        try {
+          const url = URL.createObjectURL(new Blob([inline.textContent], { type: 'text/javascript' }));
+          const w = new Worker(url);
+          if (await tryWorker(w)) { this.url = url; return this.attach(w); }
+        } catch (e) { /* luồng chính */ }
+        this.mode = 'main';
+        return this;
+      }
       try {
         const w = new Worker('engine.js');
         if (await tryWorker(w)) { this.url = 'engine.js'; return this.attach(w); }
@@ -1414,6 +1425,13 @@
   renderLearnInfo();
   syncControls();
   render();
+  // Cài như ứng dụng và chơi offline khi chạy trên web thật (GitHub Pages…); bỏ qua trong khung nhúng và khi mở file trực tiếp
+  try {
+    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && window.top === window && !document.getElementById('engine-src')) {
+      const link = document.createElement('link'); link.rel = 'manifest'; link.href = 'manifest.webmanifest'; document.head.appendChild(link);
+      navigator.serviceWorker.register('sw.js').catch(() => { });
+    }
+  } catch (e) { /* không hỗ trợ */ }
   engine.init().then(() => {
     $('engineMode').textContent = engine.mode === 'worker' ? 'Máy tính ở luồng riêng, giao diện không bị đứng.' : 'Máy tính trên luồng chính (tối đa 4 giây).';
     afterChange();
