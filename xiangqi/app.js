@@ -136,7 +136,7 @@
   const S = {
     startFen: X.START_FEN, moves: [], notes: [], view: null,
     mode: 'play', human: 0, flipped: false, time: 3000,
-    selected: -1, hint: null, analysis: null, review: null, thinking: false, autoHint: true, autoFlip: false, autoPaused: false,
+    selected: -1, hint: null, analysis: null, review: null, thinking: false, op: null, opSide: 0, autoHint: true, autoFlip: false, autoPaused: false,
     anim: null, animKey: '', prevVi: -1,
     editing: false, edPiece: 12, edBoard: null, edSide: 0,
     train: null,
@@ -151,6 +151,7 @@
   }
   const viewIndex = () => (S.view == null ? S.moves.length : S.view);
   function currentPos() {
+    if (S.op) return S.op.pos;
     if (S.train) return S.train.pos;
     return buildPos(viewIndex());
   }
@@ -289,11 +290,11 @@
     dyn.textContent = '';
     const pos = S.editing ? null : currentPos();
     const board = S.editing ? S.edBoard : pos.board;
-    const vi = viewIndex();
-    const last = S.train || S.editing ? 0 : (vi > 0 ? S.moves[vi - 1] : 0);
+    const vi = S.op ? S.op.idx : viewIndex();
+    const last = S.op ? S.op.last : S.train || S.editing ? 0 : (vi > 0 ? S.moves[vi - 1] : 0);
 
     // hoạt cảnh quân trượt khi vừa đi một nước
-    const animKey = S.train ? 'train' : vi + ':' + last;
+    const animKey = S.train ? 'train' : (S.op ? 'op' : '') + vi + ':' + last;
     if (animKey !== S.animKey) {
       if (last && S.prevVi === vi - 1 && !reduceMotion) S.anim = { key: animKey, mv: last, t0: performance.now() };
       S.animKey = animKey;
@@ -359,7 +360,8 @@
     for (let sq = 0; sq < 256; sq++) { const pc = board[sq]; if (pc) n[pc < 16 ? 0 : 1][pc & 7]++; }
     return n;
   }
-  const sideName = (sd) => (S.train || S.editing ? (sd === 0 ? 'Quân Đỏ' : 'Quân Đen')
+  const sideName = (sd) => (S.op ? (sd === S.op.o.side ? 'Bạn' : 'Đối thủ (theo sách)') + (sd === 0 ? ' · Đỏ' : ' · Đen')
+    : S.train || S.editing ? (sd === 0 ? 'Quân Đỏ' : 'Quân Đen')
     : S.mode === 'play' ? (sd === S.human ? 'Bạn' : 'Máy') + (sd === 0 ? ' · Đỏ' : ' · Đen')
     : S.mode === 'auto' ? (sd === 0 ? 'Máy · Đỏ' : 'Máy · Đen')
     : (sd === 0 ? 'Quân Đỏ' : 'Quân Đen'));
@@ -367,9 +369,9 @@
   function renderPlayers(pos) {
     const board = S.editing ? S.edBoard : pos.board;
     const now = countPieces(board);
-    const start = S.editing ? now : countPieces(new X.Position().fromFen(S.train ? S.train.fen : S.startFen).board);
+    const start = S.editing ? now : countPieces(new X.Position().fromFen(S.op ? X.START_FEN : S.train ? S.train.fen : S.startFen).board);
     const pts = [0, 1].map((sd) => now[sd].reduce((a, c, t) => a + c * PIECE_PTS[t], 0));
-    const over = !S.editing && !S.train && gameResult(pos);
+    const over = !S.editing && !S.train && !S.op && gameResult(pos);
     const topSd = S.flipped ? 0 : 1;
     for (const [id, sd] of [['stripTop', topSd], ['stripBottom', 1 - topSd]]) {
       const opp = 1 - sd;
@@ -402,7 +404,14 @@
   function renderStatus(pos) {
     renderPlayers(pos);
     if (S.editing) { $('turnText').textContent = 'Đang xếp cờ · chọn quân bên tab “Xếp cờ”'; return; }
+    const tag = detectOpening();
+    $('openingTag').hidden = !tag; $('openingTag').textContent = tag;
     let t = (pos.sd === 0 ? 'Đỏ' : 'Đen') + ' đi';
+    if (S.op) {
+      $('turnText').textContent = `${t} · bài khai cuộc, nước ${S.op.idx}/${S.op.o.moves.length}`;
+      $('gameMsg').hidden = true; renderFacts(pos); renderMoveList();
+      return;
+    }
     if (S.train) t += ' · đang luyện tập';
     else if (S.view != null) t += ` · đang xem lại nước ${S.view}/${S.moves.length}`;
     else t += ` · nước thứ ${Math.floor(S.moves.length / 2) + 1}`;
@@ -617,7 +626,7 @@
   async function engineTurn() {
     const pos = currentPos();
     const engineSide = S.mode === 'play' ? pos.sd !== S.human : S.mode === 'auto' && !S.autoPaused;
-    if (!engineSide || S.view != null || S.train || gameResult(pos)) return;
+    if (!engineSide || S.view != null || S.train || S.op || gameResult(pos)) return;
     const t0 = performance.now();
     const key = posKey(pos);
     let mv = bookMove(S.startFen, S.moves);
@@ -651,6 +660,7 @@
 
   // ---------- Đi quân ----------
   function doMove(mv, byEngine) {
+    if (S.op) return opMove(mv);
     if (S.train) return trainMove(mv);
     if (S.view != null && S.view < S.moves.length) {
       S.moves = S.moves.slice(0, S.view); S.notes = S.notes.slice(0, S.view);
@@ -672,7 +682,7 @@
     clearAnalysis('');
     render();
     saveGame();
-    if (S.train || S.editing) return;
+    if (S.train || S.editing || S.op) return;
     const pos = currentPos();
     if (S.mode === 'auto') {
       if (!S.autoPaused && S.view == null) setTimeout(engineTurn, 60);
@@ -708,9 +718,10 @@
     if (sq < 0) return;
     if (S.editing) return editClick(sq);
     const pos = currentPos();
-    if (!S.train && gameResult(pos)) return;
-    if (!S.train && S.mode === 'play' && pos.sd !== S.human && S.view == null) return;
-    if (!S.train && S.mode === 'auto' && !S.autoPaused && S.view == null) return;
+    if (S.op && S.op.drill && pos.sd !== S.op.o.side) return;
+    if (!S.train && !S.op && gameResult(pos)) return;
+    if (!S.train && !S.op && S.mode === 'play' && pos.sd !== S.human && S.view == null) return;
+    if (!S.train && !S.op && S.mode === 'auto' && !S.autoPaused && S.view == null) return;
     const pc = pos.board[sq];
     const mine = pc && ((pc < 16 ? 0 : 1) === pos.sd);
     if (S.selected >= 0) {
@@ -809,7 +820,9 @@
   for (const b of document.querySelectorAll('.tabs button')) {
     b.onclick = () => {
       for (const o of document.querySelectorAll('.tabs button')) o.setAttribute('aria-selected', String(o === b));
-      for (const t of ['play', 'learn', 'edit']) $('pane-' + t).hidden = t !== b.dataset.tab;
+      for (const t of ['play', 'open', 'learn', 'edit']) $('pane-' + t).hidden = t !== b.dataset.tab;
+      if (b.dataset.tab !== 'open' && S.op) exitOp();
+      if (b.dataset.tab === 'open') renderOpList();
       if (b.dataset.tab !== 'edit' && S.editing) { S.editing = false; render(); }
       if (b.dataset.tab === 'edit') { $('fenText').value = currentPos().toFen(); $('iccsText').value = S.moves.map(X.moveToIccs).join(' '); }
     };
@@ -1125,6 +1138,250 @@
     } catch (e) { msg.textContent = 'Không nạp được: ' + e.message; }
   };
   $('btnIccsCopy').onclick = () => { $('iccsText').value = S.moves.map(X.moveToIccs).join(' '); copyText($('iccsText').value, $('fenMsg')); };
+
+  // ---------- Học khai cuộc ----------
+  const OPL = window.XQ_OPENINGS || { OPENINGS: [], PRINCIPLES: [] };
+  const OP_KEY = 'kythu.openings.v1';
+  let opStats = store.get(OP_KEY, {});
+  let opToken = 0;
+  const mirrorMv = (mv) => { const f = (sq) => X.COORD(14 - (sq & 15), sq >> 4); return X.MOVE(f(X.SRC(mv)), f(X.DST(mv))); };
+  const opBook = (op, i) => { const m = X.iccsToMove(op.o.moves[i][0]); return op.mirror ? mirrorMv(m) : m; };
+  const opUserMoves = (o) => o.moves.filter((_, i) => i % 2 === o.side).length;
+
+  function renderOpList() {
+    const box = $('opList');
+    box.textContent = '';
+    setPressed('opRed', 'opBlack', S.opSide === 0);
+    $('opSideHint').textContent = S.opSide === 0
+      ? 'Đi tiên (cầm Đỏ): nên học Pháo đầu trước, rồi cách đánh khi Đen đáp bằng Bình phong mã, Thuận pháo hay Phản cung mã.'
+      : 'Đi sau (cầm Đen): nên học Bình phong mã để chống Pháo đầu trước, sau đó Thuận pháo và cách đáp Tiên nhân chỉ lộ.';
+    for (const o of OPL.OPENINGS.filter((x) => x.side === S.opSide)) {
+      const st = opStats[o.id] || { runs: 0, perfect: 0, best: 0 };
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'opcard';
+      if (S.op && S.op.o.id === o.id) b.setAttribute('aria-current', 'true');
+      const mastered = st.perfect >= 2;
+      b.innerHTML = `<span class="optop"><strong>${o.name}</strong><span class="lvl ${o.level === 'Cơ bản' ? 'basic' : 'adv'}">${o.level}</span>${mastered ? '<span class="lvl done">Đã thuộc</span>' : ''}</span>` +
+        `<span class="opdesc">${o.desc}</span>` +
+        `<span class="opmeta">${o.moves.length} nước · bạn đi ${opUserMoves(o)} nước · ${st.runs ? `đã luyện ${st.runs} lần, đúng nhất ${st.best}%` : 'chưa luyện'}</span>` +
+        `<span class="opbar"><i style="width:${st.best}%"></i></span>`;
+      b.onclick = () => startOp(o, false);
+      box.appendChild(b);
+    }
+  }
+
+  function opNotes(op) {
+    const p = new X.Position().fromFen(X.START_FEN), out = [];
+    for (let i = 0; i < op.o.moves.length; i++) { const mv = opBook(op, i); out.push(X.moveToVN(p, mv)); p.makeMove(mv); }
+    return out;
+  }
+
+  function startOp(o, drill) {
+    exitTrain();
+    engine.cancel(); setThinking(false);
+    const prevFlip = S.op ? S.op.prevFlip : S.flipped;
+    S.op = { o, drill, prevFlip, mirror: false };
+    S.flipped = o.side === 1;
+    S.selected = -1;
+    opReset();
+  }
+
+  function opReset() {
+    const op = S.op;
+    opToken++;
+    Object.assign(op, { pos: new X.Position().fromFen(X.START_FEN), idx: 0, last: 0, played: [], wrong: 0, errors: 0, done: false, mirror: false, msg: null });
+    op.notes = opNotes(op);
+    S.hint = null;
+    renderOpPanel(); render();
+    opAuto();
+  }
+
+  // Máy đi các nước của đối phương theo sách khi đang luyện
+  function opAuto() {
+    const op = S.op;
+    if (!op || !op.drill || op.done || op.idx >= op.o.moves.length || op.pos.sd === op.o.side) return;
+    const tok = opToken;
+    setTimeout(() => {
+      if (S.op !== op || tok !== opToken || op.done) return;
+      opPlay(opBook(op, op.idx));
+      renderOpPanel(); render();
+      opAuto();
+    }, 650);
+  }
+
+  function opPlay(mv) {
+    const op = S.op;
+    op.pos.makeMove(mv); op.last = mv; op.played.push(mv); op.idx++;
+    op.wrong = 0;
+    if (op.idx >= op.o.moves.length) opFinish();
+  }
+
+  function opGoto(n) {
+    const op = S.op;
+    opToken++;
+    n = Math.max(0, Math.min(op.o.moves.length, n));
+    op.pos = new X.Position().fromFen(X.START_FEN); op.played = []; op.idx = 0; op.last = 0; op.done = false; op.msg = null;
+    for (let i = 0; i < n; i++) { const mv = opBook(op, i); op.pos.makeMove(mv); op.played.push(mv); op.last = mv; op.idx++; }
+    op.done = op.idx >= op.o.moves.length;
+    renderOpPanel(); render();
+  }
+
+  function opMove(mv) {
+    const op = S.op;
+    if (op.done) return;
+    let expected = opBook(op, op.idx);
+    // Pháo đầu bên trái (P8-5) cũng đúng: lật đối xứng cả bài
+    if (op.idx === 0 && !op.mirror && mv !== expected && mirrorMv(expected) === mv) { op.mirror = true; op.notes = opNotes(op); expected = mv; }
+    const note = X.moveToVN(op.pos, mv), want = op.notes[op.idx];
+    if (!op.drill) {
+      if (mv === expected) { opPlay(mv); op.msg = null; }
+      else op.msg = { bad: true, text: `${note} không phải nước trong bài. Bài này đi ${want}. Bấm “Nước tiếp” hoặc đi đúng nước có mũi tên.` };
+      S.selected = -1; renderOpPanel(); render();
+      return;
+    }
+    if (op.pos.sd !== op.o.side) return;
+    if (mv === expected) {
+      const i = op.idx;
+      const firstTry = op.wrong === 0;
+      opPlay(mv);
+      op.msg = { bad: false, text: `${firstTry ? 'Đúng!' : 'Được rồi.'} ${want}: ${op.o.moves[i][1]}` };
+      S.selected = -1; renderOpPanel(); render();
+      opAuto();
+      return;
+    }
+    if (op.wrong === 0) op.errors++;
+    op.wrong++;
+    const srcPc = op.pos.board[X.SRC(expected)];
+    const fileHint = want.charAt(X.VN_LETTER[srcPc & 7].length);
+    const where = /\d/.test(fileHint) ? ` ở cột ${fileHint}` : fileHint === 't' ? ' phía trước' : fileHint === 's' ? ' phía sau' : fileHint === 'g' ? ' ở giữa' : '';
+    if (op.wrong >= 2) op.msg = { bad: true, text: `Chưa đúng. Nước đúng là ${want} (mũi tên xanh): ${op.o.moves[op.idx][1]}` };
+    else op.msg = { bad: true, text: `${note} chưa phải nước chuẩn. Gợi ý: hãy đi ${X.VN_NAME[srcPc & 7]}${where}. Thử lại nhé.` };
+    S.selected = -1; renderOpPanel(); render();
+  }
+
+  function opFinish() {
+    const op = S.op;
+    op.done = true;
+    if (!op.drill) return;
+    const total = opUserMoves(op.o);
+    const pct = Math.round(100 * Math.max(0, total - op.errors) / total);
+    const st = opStats[op.o.id] || { runs: 0, perfect: 0, best: 0 };
+    st.runs++; if (op.errors === 0) st.perfect++; st.best = Math.max(st.best, pct);
+    opStats[op.o.id] = st; store.set(OP_KEY, opStats);
+    op.result = { pct, total, errors: op.errors, mastered: st.perfect >= 2 };
+  }
+
+  function renderOpPanel() {
+    const op = S.op;
+    $('opPanel').hidden = !op;
+    $('opList').hidden = !!op;
+    $('opSideRow').hidden = !!op;
+    if (!op) return;
+    const len = op.o.moves.length;
+    $('opTitle').textContent = op.o.name;
+    $('opProgress').textContent = `nước ${op.idx}/${len}`;
+    setPressed('opView', 'opDrill', !op.drill);
+    $('opViewCtl').hidden = op.drill;
+    $('opDoneCtl').hidden = !(op.done && op.drill);
+    $('opPrev').disabled = op.idx === 0; $('opNext').disabled = op.idx >= len;
+    // lời giảng
+    const note = $('opNote');
+    let html = '';
+    if (op.drill) {
+      if (op.done && op.result) {
+        const r = op.result;
+        html = `<strong>Hoàn thành bài!</strong> Bạn đi đúng ngay ${r.total - r.errors}/${r.total} nước (${r.pct}%).` +
+          (r.errors === 0 ? (r.mastered ? ' Bạn đã thuộc bài này.' : ' Không sai nước nào. Luyện thêm một lần không sai nữa là thuộc bài.') : ' Luyện lại để nhớ các nước còn sai.');
+      } else if (op.msg) html = op.msg.text;
+      else html = op.pos.sd === op.o.side ? `Đến lượt bạn (${op.o.side === 0 ? 'Đỏ' : 'Đen'}). Hãy đi nước chuẩn của khai cuộc.` : 'Đối thủ đang đi theo sách…';
+      if (!op.done && op.pos.sd === op.o.side && op.msg && !op.msg.bad) html += `<br><span class="muted">Đến lượt bạn đi tiếp.</span>`;
+    } else {
+      if (op.msg) html = op.msg.text;
+      else if (op.idx === 0) html = `${op.o.desc}<br><span class="muted">Bấm “Nước tiếp” hoặc đi đúng nước có mũi tên trên bàn.</span>`;
+      else html = `<strong>${Math.ceil(op.idx / 2)}${op.idx % 2 ? '.' : '…'} ${op.notes[op.idx - 1]}</strong> · ${op.o.moves[op.idx - 1][1]}`;
+      if (op.done) html += '<br><strong>Hết bài.</strong> Chuyển sang “Luyện tập” để tự đi lại từ đầu.';
+    }
+    note.className = 'opnote' + (op.msg && op.msg.bad ? ' bad' : '');
+    note.innerHTML = html;
+    // mũi tên: xem bài luôn chỉ nước tiếp; luyện tập chỉ hiện sau 2 lần sai
+    const showArrow = !op.done && op.idx < len && (!op.drill || op.wrong >= 2);
+    S.hint = showArrow ? { fenKey: posKey(op.pos), cands: [{ move: opBook(op, op.idx), score: 0, pv: [opBook(op, op.idx)] }], sel: 0, scored: false } : null;
+    // danh sách nước trong bài
+    const ol = $('opLine');
+    ol.textContent = '';
+    for (let i = 0; i < len; i += 2) {
+      const no = document.createElement('span'); no.className = 'no'; no.textContent = (i / 2 + 1) + '.'; ol.appendChild(no);
+      for (let j = i; j < i + 2; j++) {
+        const sp = document.createElement('span');
+        if (j < len) {
+          const hidden = op.drill && j >= op.idx;
+          sp.textContent = hidden ? '···' : op.notes[j];
+          sp.className = 'mv' + (j % 2 === op.o.side ? ' mine' : '') + (j === op.idx - 1 ? ' cur' : '') + (hidden ? ' hid' : '');
+          if (!op.drill) { sp.onclick = () => opGoto(j + 1); sp.title = op.o.moves[j][1]; }
+        }
+        ol.appendChild(sp);
+      }
+    }
+  }
+
+  function exitOp() {
+    if (!S.op) return;
+    opToken++;
+    S.flipped = S.op.prevFlip;
+    S.op = null; S.hint = null; S.selected = -1;
+    renderOpPanel();
+    afterChange();
+  }
+
+  function opContinue() {
+    const op = S.op;
+    const moves = op.played.slice(), side = op.o.side;
+    opToken++;
+    S.op = null; S.hint = null;
+    try { loadPosition(X.START_FEN, moves); } catch (e) { return; }
+    S.mode = 'play'; S.human = side; S.flipped = side === 1;
+    syncControls(); renderOpPanel();
+    $('tab-play').click();
+    afterChange();
+  }
+
+  // Nhận ra khai cuộc trong ván đang đánh và chỉ nước sách tiếp theo
+  function detectOpening() {
+    if (S.op || S.train || S.editing || S.startFen !== X.START_FEN) return '';
+    const played = S.moves.slice(0, viewIndex());
+    if (played.length < 2) return '';
+    let best = null;
+    for (const o of OPL.OPENINGS) for (const mir of [false, true]) {
+      let k = 0;
+      while (k < played.length && k < o.moves.length) {
+        let m = X.iccsToMove(o.moves[k][0]); if (mir) m = mirrorMv(m);
+        if (m !== played[k]) break;
+        k++;
+      }
+      if (k >= 2 && (!best || k > best.k)) best = { o, k, mir };
+    }
+    if (!best) return '';
+    const { o, k, mir } = best;
+    if (k === played.length && k < o.moves.length) {
+      let m = X.iccsToMove(o.moves[k][0]); if (mir) m = mirrorMv(m);
+      return `Khai cuộc: ${o.family} · nước theo sách tiếp theo: ${X.moveToVN(currentPos(), m)}`;
+    }
+    if (k === played.length || (k === o.moves.length && played.length - k <= 6)) return `Khai cuộc: ${o.family} · đã đi hết bài trong sách`;
+    if (played.length - k <= 6) return `Khai cuộc: ${o.family} · ra khỏi sách ở nước thứ ${Math.floor(k / 2) + 1}`;
+    return '';
+  }
+
+  $('opRed').onclick = () => { S.opSide = 0; renderOpList(); };
+  $('opBlack').onclick = () => { S.opSide = 1; renderOpList(); };
+  $('opView').onclick = () => { if (S.op && S.op.drill) { S.op.drill = false; opReset(); } };
+  $('opDrill').onclick = () => { if (S.op && !S.op.drill) { S.op.drill = true; opReset(); } };
+  $('opPrev').onclick = () => opGoto(S.op.idx - 1);
+  $('opNext').onclick = () => opGoto(S.op.idx + 1);
+  $('opRestart').onclick = () => opGoto(0);
+  $('opAgain').onclick = () => opReset();
+  $('opContinue').onclick = opContinue;
+  $('opBack').onclick = () => { exitOp(); renderOpList(); };
+  $('opPrinciples').innerHTML = OPL.PRINCIPLES.map((p) => `<li>${p}</li>`).join('');
 
   // ---------- Lưu ván ----------
   function saveGame() { store.set('kythu.game', { fen: S.startFen, moves: S.moves.map(X.moveToIccs), mode: S.mode, human: S.human }); }
